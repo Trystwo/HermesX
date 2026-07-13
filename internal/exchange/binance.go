@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -79,6 +80,7 @@ func (c *Client) signedRequest(ctx context.Context, method, path string, params 
 		q.Set(k, v)
 	}
 	q.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	q.Set("recvWindow", "5000")
 	queryStr := q.Encode()
 	signature := c.sign(queryStr)
 
@@ -96,26 +98,20 @@ func (c *Client) signedRequest(ctx context.Context, method, path string, params 
 	}
 	defer resp.Body.Close()
 
-	var data map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		// Try array response
-		var arr []map[string]interface{}
-		resp.Body.Close()
-		req2, _ := http.NewRequestWithContext(ctx, method, reqURL, nil)
-		req2.Header.Set("X-MBX-APIKEY", c.apiKey)
-		resp2, _ := c.httpClient.Do(req2)
-		if resp2 != nil {
-			defer resp2.Body.Close()
-			json.NewDecoder(resp2.Body).Decode(&arr)
-			if len(arr) > 0 {
-				return arr[0], nil
-			}
-		}
-		return nil, fmt.Errorf("binance API error: %d", resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
 	}
-
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("binance API error (%d): %v", resp.StatusCode, data)
+		return nil, fmt.Errorf("binance API error (%d): %s", resp.StatusCode, string(body))
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		var arr []map[string]interface{}
+		if err2 := json.Unmarshal(body, &arr); err2 == nil && len(arr) > 0 {
+			return arr[0], nil
+		}
+		return nil, fmt.Errorf("binance parse error: %v", err)
 	}
 	return data, nil
 }

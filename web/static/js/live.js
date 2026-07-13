@@ -10,66 +10,6 @@ export function initLive() {
   bindSlider('live-amount', 'live-amount-val', '');
   bindSlider('live-leverage', 'live-leverage-val', 'x');
 
-  document.getElementById('live-toggle-btn')?.addEventListener('click', toggleLive);
-}
-
-async function toggleLive() {
-  const btn = document.getElementById('live-toggle-btn');
-  if (!btn) return;
-
-  if (AppState.liveRunning) {
-    await fetch('/api/live/stop', { method: 'POST' }).catch(() => {});
-    AppState.liveRunning = false;
-    btn.textContent = t('Start');
-    btn.disabled = false;
-    setLiveConfigLocked(false);
-    return;
-  }
-
-  btn.textContent = t('Starting') + '...';
-  btn.disabled = true;
-
-  const modeRadio = document.querySelector('input[name="live-mode"]:checked');
-  const liveMode = modeRadio ? modeRadio.value : 'sim';
-
-  if (liveMode === 'real' && !confirm(t('Start REAL trading on Binance?'))) {
-    btn.disabled = false;
-    btn.textContent = t('Start');
-    return;
-  }
-
-  try {
-    const config = {
-      leverage: Number($('live-leverage').value),
-      stopLossPercent: Number($('live-stop').value) / 100,
-      takeProfitPercent: Number($('live-tp').value) / 100,
-      positionAmountValue: Number($('live-amount').value),
-      mode: liveMode,
-      interval: $('live-interval').value,
-      direction: document.querySelector('input[name="live-direction"]:checked')?.value || 'both',
-    };
-
-    const res = await fetch('/api/live/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config }),
-    });
-    const data = await res.json();
-    if (!data.success) { alert(t('Request failed') + ': ' + data.error); btn.textContent = t('Start'); btn.disabled = false; return; }
-
-    AppState.liveRunning = true;
-    btn.textContent = t('Stop');
-    btn.disabled = false;
-    setLiveConfigLocked(true);
-
-    const stateRes = await fetch('/api/live/state');
-    const stateData = await stateRes.json();
-    if (stateData.success && stateData.state) {
-      AppState.liveState = stateData.state;
-      renderLiveState();
-    }
-  } catch (err) { alert(t('Request failed') + ': ' + err.message); btn.textContent = t('Start'); btn.disabled = false; }
-}
 
 export function renderLiveState() {
   const s = AppState.liveState;

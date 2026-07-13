@@ -79,6 +79,7 @@ type Engine struct {
 	broadcastFn func(LiveState)
 
 	lastCheckedHour int64
+	hedgeMode       bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -125,6 +126,19 @@ func (e *Engine) State() LiveState {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
 	return cloneState(e.state)
+}
+
+// GetExchangeBalance fetches real balance from Binance (testnet/prod).
+// Returns 0 if no exchange client is configured.
+func (e *Engine) GetExchangeBalance() float64 {
+	if e.trade == nil {
+		return 0
+	}
+	bal, err := e.trade.GetBalance(context.Background())
+	if err != nil {
+		return 0
+	}
+	return bal.AvailableBalance
 }
 
 func (e *Engine) Run(ctx context.Context) {
@@ -182,8 +196,25 @@ func (e *Engine) Start(currentPrice float64, currentHour int64) {
 	e.state.StartTime = time.Now().UnixMilli()
 	e.state.LastPrice = currentPrice
 	e.state.CurrentHour = currentHour
-	e.state.Balance = e.cfg.InitialBalance
 	e.lastCheckedHour = currentHour
+
+	// Use real exchange balance if available (testnet/prod)
+	if e.trade != nil {
+		bal, err := e.trade.GetBalance(context.Background())
+		if err == nil && bal.AvailableBalance > 0 {
+			e.cfg.InitialBalance = bal.AvailableBalance
+			e.state.Config.InitialBalance = bal.AvailableBalance
+			e.state.Balance = bal.AvailableBalance
+			e.logf("exchange balance: $%.2f", bal.AvailableBalance)
+		} else {
+			e.state.Balance = e.cfg.InitialBalance
+			if err != nil {
+				e.logf("get balance error: %v, using config $%.2f", err, e.cfg.InitialBalance)
+			}
+		}
+	} else {
+		e.state.Balance = e.cfg.InitialBalance
+	}
 
 	e.log("engine started")
 	e.logf("initial price: $%.2f", currentPrice)
@@ -192,8 +223,10 @@ func (e *Engine) Start(currentPrice float64, currentHour int64) {
 		sym := strings.ToUpper(e.cfg.Symbol)
 		ctx := context.Background()
 		if err := e.trade.SetHedgeMode(ctx); err != nil {
-			e.logf("set hedge mode err: %v", err)
+			e.logf("hedge mode failed: %v, using one-way mode", err)
+			e.hedgeMode = false
 		} else {
+			e.hedgeMode = true
 			e.log("hedge mode enabled")
 		}
 		if err := e.trade.SetLeverage(ctx, sym, e.cfg.Leverage); err != nil {
@@ -208,14 +241,40 @@ func (e *Engine) Start(currentPrice float64, currentHour int64) {
 
 func (e *Engine) Stop() {
 	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
-
 	if !e.state.Running {
+		e.stateMu.Unlock()
 		return
 	}
+
+	// Close all open positions via exchange
+	if e.trade != nil && (len(e.state.LongLots) > 0 || len(e.state.ShortLots) > 0) {
+		ctx := context.Background()
+		sym := strings.ToUpper(e.cfg.Symbol)
+		for _, l := range e.state.LongLots {
+			closePosSide := ""
+			if e.hedgeMode { closePosSide = "LONG" }
+			e.trade.MarketClose(ctx, "SELL", l.Quantity, closePosSide, sym)
+		}
+		for _, l := range e.state.ShortLots {
+			closePosSide := ""
+			if e.hedgeMode { closePosSide = "SHORT" }
+			e.trade.MarketClose(ctx, "BUY", l.Quantity, closePosSide, sym)
+		}
+		// Sync balance from exchange
+		if bal, err := e.trade.GetBalance(ctx); err == nil {
+			e.state.Balance = bal.AvailableBalance
+			e.cfg.InitialBalance = bal.AvailableBalance
+			e.state.Config.InitialBalance = bal.AvailableBalance
+		}
+		e.state.LongLots = nil
+		e.state.ShortLots = nil
+		e.logf("closed all positions, balance: $%.2f", e.state.Balance)
+	}
+
 	e.state.Running = false
 	e.log("engine stopped")
 	e.broadcastStateLocked()
+	e.stateMu.Unlock()
 }
 
 func (e *Engine) UpdateConfig(cfg EngineConfig) {
@@ -275,10 +334,18 @@ func (e *Engine) processNewHour(price float64, hourTs int64) {
 	if useTrade {
 		qty := (marginPerSide * float64(cfg.Leverage)) / price
 		sym := strings.ToUpper(cfg.Symbol)
+		e.logf("trade: qty=%.6f notional=%.2f price=%.2f", qty, qty*price, price)
+
+		posSideLong := ""
+		posSideShort := ""
+		if e.hedgeMode {
+			posSideLong = "LONG"
+			posSideShort = "SHORT"
+		}
 
 		e.stateMu.Unlock()
 		if dir == "both" || dir == "long" {
-			r, err := e.trade.MarketOpen(context.Background(), "BUY", qty, "LONG", sym)
+			r, err := e.trade.MarketOpen(context.Background(), "BUY", qty, posSideLong, sym)
 			if err != nil {
 				e.logf("trade open long error: %v", err)
 			} else {
@@ -288,10 +355,11 @@ func (e *Engine) processNewHour(price float64, hourTs int64) {
 				acct.OpenLong(entryPx, marginPerSide, float64(cfg.Leverage), feeRate, cfg.StopLossPercent, cfg.TakeProfitPercent)
 				openFee += marginPerSide * feeRate
 				didOpen = true
+				e.logf("trade open long ok: avg=%f execQty=%f", r.AvgPrice, r.ExecutedQty)
 			}
 		}
 		if dir == "both" || dir == "short" {
-			r, err := e.trade.MarketOpen(context.Background(), "SELL", qty, "SHORT", sym)
+			r, err := e.trade.MarketOpen(context.Background(), "SELL", qty, posSideShort, sym)
 			if err != nil {
 				e.logf("trade open short error: %v", err)
 			} else {
@@ -301,6 +369,7 @@ func (e *Engine) processNewHour(price float64, hourTs int64) {
 				acct.OpenShort(entryPx, marginPerSide, float64(cfg.Leverage), feeRate, cfg.StopLossPercent, cfg.TakeProfitPercent)
 				openFee += marginPerSide * feeRate
 				didOpen = true
+				e.logf("trade open short ok: avg=%f execQty=%f", r.AvgPrice, r.ExecutedQty)
 			}
 		}
 		e.stateMu.Lock()
@@ -378,9 +447,12 @@ func (e *Engine) checkStopLoss() {
 			if sl.Quantity <= 0 { continue }
 			side := "SELL"
 			if sl.Side == "short" { side = "BUY" }
-			posSide := "LONG"
-			if sl.Side == "short" { posSide = "SHORT" }
-			if _, err := e.trade.MarketClose(ctx, side, sl.Quantity, posSide, sym); err != nil {
+			closePosSide := ""
+			if e.hedgeMode {
+				closePosSide = "LONG"
+				if sl.Side == "short" { closePosSide = "SHORT" }
+			}
+			if _, err := e.trade.MarketClose(ctx, side, sl.Quantity, closePosSide, sym); err != nil {
 				e.logf("trade close %s error: %v", sl.Side, err)
 			}
 		}
@@ -442,7 +514,10 @@ func (e *Engine) broadcastStateLocked() {
 	for _, l := range e.state.ShortLots {
 		shortPnL += (l.EntryPrice - price) * l.Quantity
 	}
-	totalEquity := e.state.Balance + longPnL + shortPnL
+	totalMargin := 0.0
+	for _, l := range e.state.LongLots { totalMargin += l.Margin }
+	for _, l := range e.state.ShortLots { totalMargin += l.Margin }
+	totalEquity := e.state.Balance + totalMargin + longPnL + shortPnL
 
 	state := e.state
 	state.Snapshots = append([]Snapshot(nil), e.state.Snapshots...)

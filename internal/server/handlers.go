@@ -34,6 +34,7 @@ func (h *Handlers) Register(r chi.Router) {
 	r.Post("/api/live/start", h.handleLiveStart)
 	r.Post("/api/live/stop", h.handleLiveStop)
 	r.Get("/api/live/state", h.handleLiveState)
+	r.Get("/api/live/balance", h.handleLiveBalance)
 	r.Get("/api/history", h.handleHistoryList)
 	r.Get("/api/history/{id}", h.handleHistoryGet)
 	r.Delete("/api/history/{id}", h.handleHistoryDelete)
@@ -247,6 +248,11 @@ func (h *Handlers) handleLiveStop(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) handleLiveState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"success": true, "state": h.engine.State()})
+}
+
+func (h *Handlers) handleLiveBalance(w http.ResponseWriter, r *http.Request) {
+	bal := h.engine.GetExchangeBalance()
+	writeJSON(w, map[string]interface{}{"success": true, "balance": bal})
 }
 
 func (h *Handlers) handleHistoryList(w http.ResponseWriter, r *http.Request) {

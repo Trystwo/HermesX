@@ -1,7 +1,7 @@
 // History management
 import { AppState } from './state.js';
 import { $, fmtPrice, fmtUsd } from './ui.js';
-import { destroyChart } from './charts.js';
+import { destroyChart, replaceChart } from './charts.js';
 import { t, applyTranslations } from './i18n.js';
 
 export async function loadHistoryList() {
@@ -99,7 +99,7 @@ export async function showHistoryDetail(id) {
       }
     }
 
-    if (d.symbol) { const s = $('bt-symbol'); if (s) s.value = d.symbol; }
+    if (d.symbol && !d.symbol.startsWith('bt-')) { const s = $('bt-symbol'); if (s) s.value = d.symbol; }
     if (d.days) { const dd = $('bt-days'); if (dd) dd.value = d.days; const dv = $('bt-days-val'); if (dv) dv.value = String(d.days); }
 
     $('bt-long-list').innerHTML = renderHistoryPositions((d.positions || []).filter(p => p.side === 'long'));
@@ -120,13 +120,11 @@ export async function showHistoryDetail(id) {
     }
     $('bt-log-list').innerHTML = ordersHtml || `<p style="color:#888;font-size:12px">${t('No orders')}</p>`;
 
-    destroyChart();
     if (d.orders?.length > 1) {
-      const ctx = $('bt-chart').getContext('2d');
       const cumPnl = [];
       let sum = 0;
       for (const o of d.orders) { sum += o.profit; cumPnl.push(Math.round((baseTotal + sum) * 100) / 100); }
-      new Chart(ctx, {
+      replaceChart('bt-chart', {
         type: 'line',
         data: {
           labels: d.orders.map(o => o.time),
@@ -138,6 +136,8 @@ export async function showHistoryDetail(id) {
           scales: { x: { ticks: { maxTicksLimit: 20, font: { size: 10 } } }, y: { ticks: { font: { size: 10 }, callback: v => '$' + v.toFixed(0) } } },
         },
       });
+    } else {
+      destroyChart();
     }
   } catch (err) { alert(t('Failed to get detail') + ': ' + err.message); }
 }

@@ -3,6 +3,17 @@ import { $, formatTime } from './ui.js';
 
 let btChart = null;
 
+/** Destroy any chart on a given canvas element by ID, regardless of who owns it */
+function destroyCanvasChart(canvasId) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  try {
+    const existing = Chart.getChart(canvas);
+    if (existing) existing.destroy();
+  } catch (_) {}
+  btChart = null;
+}
+
 export function updateChart(snapshots, initialBalance) {
   if (!snapshots || snapshots.length < 2) return;
 
@@ -10,7 +21,8 @@ export function updateChart(snapshots, initialBalance) {
   const equityData = snapshots.map(s => s.equity);
   const baseline = snapshots.map(() => initialBalance);
 
-  const ctx = $('bt-chart').getContext('2d');
+  const canvas = $('bt-chart');
+  if (!canvas) return;
 
   if (btChart) {
     if (btChart.data.datasets.length < 2) {
@@ -25,6 +37,10 @@ export function updateChart(snapshots, initialBalance) {
     }
   }
 
+  // Clear any rogue chart on this canvas
+  destroyCanvasChart('bt-chart');
+
+  const ctx = canvas.getContext('2d');
   btChart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -52,3 +68,17 @@ export function destroyChart() {
 }
 
 export function getChart() { return btChart; }
+
+/**
+ * Replace chart canvas content with a new chart.
+ * Uses Chart.getChart() to find & destroy any existing chart on the canvas,
+ * even if it was created outside this module.
+ */
+export function replaceChart(canvasId, config) {
+  destroyCanvasChart(canvasId);
+  const canvas = $(canvasId);
+  if (!canvas) return null;
+  const ctx = canvas.getContext('2d');
+  btChart = new Chart(ctx, config);
+  return btChart;
+}

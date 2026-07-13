@@ -166,7 +166,7 @@ func (h *Handlers) handleBacktestRunAll(w http.ResponseWriter, r *http.Request) 
 	}
 
 	_, _ = h.store.Save(store.SaveParams{
-		Symbol: state.Symbol, Days: days, Leverage: state.Params.Leverage,
+		Symbol: state.Params.Symbol, Days: days, Leverage: state.Params.Leverage,
 		MarginRatio: state.Params.MarginRatio,
 		Summary: struct {
 			TotalReturnPct float64

@@ -9,65 +9,68 @@ export function initLive() {
   bindSlider('live-tp', 'live-tp-val', '%');
   bindSlider('live-amount', 'live-amount-val', '');
   bindSlider('live-leverage', 'live-leverage-val', 'x');
+}
 
-  $('live-start-btn').addEventListener('click', async () => {
-    const btn = $('live-start-btn');
-    btn.disabled = true;
-    btn.textContent = t('Starting') + '...';
-
-    const modeRadio = document.querySelector('input[name="live-mode"]:checked');
-    const liveMode = modeRadio ? modeRadio.value : 'sim';
-
-    if (liveMode === 'real' && !confirm(t('Start REAL trading on Binance?'))) {
-      btn.disabled = false;
-      btn.textContent = t('Start Live');
-      return;
-    }
-
-    try {
-      const res = await fetch('/api/live/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          config: {
-            leverage: Number($('live-leverage').value),
-            stopLossPercent: Number($('live-stop').value) / 100,
-            takeProfitPercent: Number($('live-tp').value) / 100,
-            positionAmountValue: Number($('live-amount').value),
-            mode: liveMode,
-            interval: $('live-interval').value,
-            direction: document.querySelector('input[name="live-direction"]:checked')?.value || 'both',
-          },
-        }),
-      });
-      const data = await res.json();
-      if (!data.success) { alert(t('Request failed') + ': ' + data.error); btn.disabled = false; btn.textContent = t('Start Live'); return; }
-
-      AppState.liveRunning = true;
-      $('live-start-btn').disabled = true;
-      $('live-start-btn').textContent = t('Running');
-      $('live-stop-btn').disabled = false;
-      setLiveConfigLocked(true);
-
-      const stateRes = await fetch('/api/live/state');
-      const stateData = await stateRes.json();
-      if (stateData.success && stateData.state) {
-        AppState.liveState = stateData.state;
-        renderLiveState();
-      }
-    } catch (err) { alert(t('Request failed') + ': ' + err.message); btn.disabled = false; btn.textContent = t('Start Live'); }
-  });
-
-  $('live-stop-btn').addEventListener('click', async () => {
+// Called from HTML onclick attribute
+window.toggleLive = async function() {
+  const btn = document.getElementById('live-toggle-btn');
+  if (AppState.liveRunning) {
     try {
       await fetch('/api/live/stop', { method: 'POST' });
     } catch (err) { /* ignore */ }
     AppState.liveRunning = false;
-    $('live-start-btn').disabled = false;
-    $('live-start-btn').textContent = t('Start Live');
-    $('live-stop-btn').disabled = true;
+    btn.textContent = t('Start');
+    btn.disabled = false;
     setLiveConfigLocked(false);
-  });
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = t('Starting') + '...';
+  await startLive();
+};
+
+async function startLive() {
+  const modeRadio = document.querySelector('input[name="live-mode"]:checked');
+  const liveMode = modeRadio ? modeRadio.value : 'sim';
+
+  if (liveMode === 'real' && !confirm(t('Start REAL trading on Binance?'))) {
+    $('live-toggle-btn').disabled = false;
+    $('live-toggle-btn').textContent = t('Start');
+    return;
+  }
+
+  try {
+    const config = {
+      leverage: Number($('live-leverage').value),
+      stopLossPercent: Number($('live-stop').value) / 100,
+      takeProfitPercent: Number($('live-tp').value) / 100,
+      positionAmountValue: Number($('live-amount').value),
+      mode: liveMode,
+      interval: $('live-interval').value,
+      direction: document.querySelector('input[name="live-direction"]:checked')?.value || 'both',
+    };
+
+    const res = await fetch('/api/live/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config }),
+    });
+    const data = await res.json();
+    if (!data.success) { alert(t('Request failed') + ': ' + data.error); $('live-toggle-btn').disabled = false; $('live-toggle-btn').textContent = t('Start'); return; }
+
+    AppState.liveRunning = true;
+    $('live-toggle-btn').textContent = t('Stop');
+    $('live-toggle-btn').disabled = false;
+    setLiveConfigLocked(true);
+
+    const stateRes = await fetch('/api/live/state');
+    const stateData = await stateRes.json();
+    if (stateData.success && stateData.state) {
+      AppState.liveState = stateData.state;
+      renderLiveState();
+    }
+  } catch (err) { alert(t('Request failed') + ': ' + err.message); $('live-toggle-btn').disabled = false; $('live-toggle-btn').textContent = t('Start'); }
 }
 
 export function renderLiveState() {

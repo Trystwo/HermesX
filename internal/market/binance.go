@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,7 +179,7 @@ func (m *BinanceMarket) pollCandles() {
 }
 
 func (m *BinanceMarket) fetchLatestCandle() (*Candle, error) {
-	url := fmt.Sprintf("%s/fapi/v1/klines?symbol=%s&interval=1h&limit=1", restBase, m.symbol)
+	url := fmt.Sprintf("%s/fapi/v1/klines?symbol=%s&interval=1h&limit=1", restBase, toUpper(m.symbol))
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -216,12 +217,19 @@ func parseFloat(v interface{}) float64 {
 	return 0
 }
 
+func toUpper(s string) string {
+	return strings.ToUpper(s)
+}
+
 // FetchCandles fetches historical klines for backtesting
 func FetchCandles(symbol, interval string, days int) ([]Candle, error) {
 	cpd := candlesPerDay(interval)
-	limit := min(days*cpd, 1500)
+	lim := days * cpd
+	if lim > 1500 {
+		lim = 1500
+	}
 	url := fmt.Sprintf("%s/fapi/v1/klines?symbol=%s&interval=%s&limit=%d",
-		restBase, symbol, interval, limit)
+		restBase, toUpper(symbol), interval, lim)
 
 	resp, err := http.Get(url)
 	if err != nil {

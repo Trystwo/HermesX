@@ -5,7 +5,7 @@ import { connect } from './ws.js';
 import { initBacktest } from './backtest.js';
 import { initLive, renderLiveState } from './live.js';
 import { loadHistoryList } from './history.js';
-import { initI18n, setLang, getLang, applyTranslations } from './i18n.js';
+import { initI18n, setLang, getLang, applyTranslations, t } from './i18n.js';
 
 Chart.defaults.color = '#b0b0b0';
 Chart.defaults.borderColor = 'rgba(255,255,255,0.08)';
@@ -65,9 +65,7 @@ async function init() {
       if (cfg.mode) { const m = document.querySelector(`input[name="live-mode"][value="${cfg.mode}"]`); if (m) m.checked = true; }
       if (s.running) {
         AppState.liveRunning = true;
-        $('live-start-btn').disabled = true;
-        $('live-start-btn').textContent = 'Running';
-        $('live-stop-btn').disabled = false;
+        $('live-toggle-btn').textContent = t('Stop');
         renderLiveState();
       }
     }

@@ -102,18 +102,54 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpSrv.Shutdown(ctx)
 }
 
+// Template view model for history items
+type histItemView struct {
+	ID               string
+	Timestamp        string
+	Symbol           string
+	Days             string
+	ReturnPctDisplay string
+	ReturnColor      string
+	StopCount        string
+	OrderCount       string
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	items, _ := s.store.List(50, 0)
-	if items == nil {
+	items, err := s.store.List(50, 0)
+	if err != nil || items == nil {
 		items = []store.HistorySummary{}
+	}
+
+	view := make([]histItemView, len(items))
+	for i, item := range items {
+		sign := ""
+		color := "#ef4444"
+		if item.TotalReturnPct >= 0 {
+			sign = "+"
+			color = "#22c55e"
+		}
+		d := time.UnixMilli(item.Timestamp)
+		timeStr := d.Format("2006-1-2 15:04")
+		view[i] = histItemView{
+			ID:               item.ID,
+			Timestamp:        timeStr,
+			Symbol:           item.Symbol,
+			Days:             fmt.Sprintf("%dd", item.Days),
+			ReturnPctDisplay: fmt.Sprintf("%s%.2f%%", sign, item.TotalReturnPct),
+			ReturnColor:      color,
+			StopCount:        fmt.Sprintf("SL:%d", item.StopCount),
+			OrderCount:       fmt.Sprintf("Ord:%d", item.OrderCount),
+		}
 	}
 
 	tmpl := template.Must(template.New("index").Parse(indexHTML))
 	data := map[string]interface{}{
-		"History": items,
+		"History": view,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	tmpl.Execute(w, data)
+	if err := tmpl.Execute(w, data); err != nil {
+		log.Printf("[server] template error: %v", err)
+	}
 }
 
 func getLanIPs() []string {

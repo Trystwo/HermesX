@@ -92,8 +92,28 @@ header h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* History items */
-.history-item { transition: background 0.15s; }
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--card-border);
+  cursor: pointer;
+  transition: background 0.15s;
+}
 .history-item:hover { background: rgba(255,255,255,0.03); }
+.history-item .h-time { color: #888; width: 140px; flex-shrink: 0; font-size: 11px; }
+.history-item .h-symbol { color: #aaa; width: 70px; font-size: 11px; }
+.history-item .h-days { color: #888; width: 30px; font-size: 11px; }
+.history-item .h-return { width: 70px; font-weight: 600; font-size: 12px; }
+.history-item .h-sl { color: #f59e0b; width: 60px; font-size: 11px; }
+.history-item .h-orders { color: #888; width: 50px; font-size: 11px; }
+.history-item .h-spacer { flex: 1; }
+.history-item .btn-view, .history-item .btn-del {
+  font-size: 11px; padding: 2px 8px; background: var(--card-border);
+  border: none; border-radius: 4px; color: var(--text); cursor: pointer;
+}
+.history-item .btn-del { padding: 2px 6px; background: transparent; color: #ef4444; }
 
 /* Responsive */
 @media (max-width: 900px) {

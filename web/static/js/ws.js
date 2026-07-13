@@ -29,15 +29,13 @@ export function connect() {
 
         if (data.state.running && !AppState.liveRunning) {
           AppState.liveRunning = true;
-          $('live-start-btn').disabled = true;
-          $('live-start-btn').textContent = t('Running');
-          $('live-stop-btn').disabled = false;
+          $('live-toggle-btn').textContent = t('Stop');
+          $('live-toggle-btn').disabled = false;
           setLiveConfigLocked(true);
         } else if (!data.state.running && AppState.liveRunning) {
           AppState.liveRunning = false;
-          $('live-start-btn').disabled = false;
-          $('live-start-btn').textContent = t('Start Live');
-          $('live-stop-btn').disabled = true;
+          $('live-toggle-btn').textContent = t('Start');
+          $('live-toggle-btn').disabled = false;
           setLiveConfigLocked(false);
         }
 

@@ -1,0 +1,306 @@
+/* HermesX 深色主题仪表盘 */
+:root {
+  --bg: #0f1117;
+  --card-bg: #1a1d28;
+  --card-border: #2a2d3a;
+  --text: #e8e8e8;
+  --text-muted: #888;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #f59e0b;
+  --blue: #3b82f6;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: 14px;
+  min-height: 100vh;
+}
+
+/* 头部 */
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--card-border);
+}
+
+header h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+
+.subtitle { color: var(--text-muted); font-size: 13px; flex: 1; }
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--red);
+  display: inline-block;
+}
+.status-dot.online { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.5); }
+.status-dot.offline { background: var(--red); }
+
+/* 网格 */
+.dashboard-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+@media (max-width: 900px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+}
+
+/* 卡片 */
+.card { background:var(--card-bg); border:1px solid var(--card-border); border-radius:8px; padding:12px; }
+
+.card h2 { font-size:14px; font-weight:600; color:var(--text-muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.4px; }
+
+.chart-card { grid-column: span 2; }
+.chart-card canvas { height:180px; max-height:180px; width:100%; }
+@media (max-width: 900px) {
+  .chart-card { grid-column: span 1; }
+}
+
+.log-card { grid-column:span 2; max-height:240px; }
+@media (max-width: 900px) {
+  .log-card { grid-column: span 1; }
+}
+
+/* 指标网格 */
+.metric-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px 10px; }
+@media (max-width: 500px) {
+  .metric-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.metric { 
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metric label { font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.2px; }
+
+.metric .value { font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; }
+
+.metric .value.positive { color: var(--green); }
+.metric .value.negative { color: var(--red); }
+
+/* 止损标记 */
+.stopped-badge {
+  margin-top: 8px;
+  padding: 4px 10px;
+  background: rgba(239,68,68,0.2);
+  border: 1px solid rgba(239,68,68,0.4);
+  border-radius: 6px;
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  animation: pulse-badge 1.5s ease-in-out infinite;
+}
+
+.hidden { display: none; }
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* 止损事件列表 */
+#stopped-list { font-size: 13px; }
+
+.stop-event {
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  background: rgba(239,68,68,0.1);
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.blink-alert {
+  animation: blink-bg 0.3s ease-in-out 3;
+}
+
+@keyframes blink-bg {
+  0%, 100% { background: rgba(239,68,68,0.1); }
+  50% { background: rgba(239,68,68,0.4); }
+}
+
+.empty-hint { color: var(--text-muted); font-style: italic; }
+
+/* 日志 */
+#log-list { max-height:180px; overflow-y:auto; font-size:12px; font-family:'SF Mono','Fira Code',monospace; line-height:1.5; }
+
+.log-line { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.05); color: #bbb; }
+
+#log-list::-webkit-scrollbar { width: 4px; }
+#log-list::-webkit-scrollbar-track { background: transparent; }
+#log-list::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 2px; }
+
+/* ========== 模式切换 ========== */
+.mode-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mode-btn {
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mode-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+
+.mode-btn.active[data-mode="live"] {
+  background: rgba(34,197,94,0.15);
+  color: var(--green);
+}
+.mode-btn.active[data-mode="backtest"] {
+  background: rgba(245,158,11,0.15);
+  color: var(--yellow);
+}
+
+/* ========== 回测配置面板 ========== */
+.config-card { grid-column: span 2; }
+@media (max-width: 900px) { .config-card { grid-column: span 1; } }
+
+.config-form { display:flex; flex-direction:column; gap:8px; }
+.config-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; }
+
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.config-row label { width:70px; font-size:12px; color:var(--text-muted); flex-shrink:0; }
+
+.config-input { flex:1; background:var(--bg); border:1px solid var(--card-border); border-radius:5px; padding:6px 10px; color:var(--text); font-size:13px; font-family:'SF Mono','Fira Code',monospace; outline:none; }
+
+.config-input:focus { border-color: var(--blue); }
+
+.config-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: var(--card-border);
+  border-radius: 3px;
+  outline: none;
+}
+
+.config-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--blue);
+  cursor: pointer;
+  border: 2px solid var(--card-bg);
+}
+
+.config-val { width:45px; text-align:right; font-size:13px; font-weight:600; font-family:'SF Mono','Fira Code',monospace; color:var(--text); flex-shrink:0; }
+.config-input-val { width:55px; text-align:right; font-size:13px; font-weight:600; font-family:'SF Mono','Fira Code',monospace; background:var(--bg); border:1px solid var(--card-border); border-radius:4px; padding:3px 6px; color:var(--text); outline:none; flex-shrink:0; }
+
+.btn-primary { padding:7px 16px; background:var(--blue); color:#fff; border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; transition:opacity 0.2s; }
+
+.btn-primary:hover { opacity: 0.85; }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ========== 回测结果 ========== */
+.result-card { grid-column: span 2; }
+@media (max-width: 900px) { .result-card { grid-column: span 1; } }
+
+/* 加载动画 */
+.loading-bar {
+  height: 4px;
+  background: var(--card-border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.loading-fill {
+  height: 100%;
+  width: 30%;
+  background: var(--blue);
+  border-radius: 2px;
+  animation: loading-slide 1.5s ease-in-out infinite;
+}
+
+@keyframes loading-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+/* 汇总指标大号显示 */
+#bt-summary-grid .metric .value {
+  font-size: 20px;
+}
+
+/* ========== 手机端优化 ========== */
+@media (max-width: 640px) {
+  body { padding: 8px; }
+
+  /* 头部紧凑 */
+  header { flex-wrap: wrap; gap: 6px; margin-bottom: 8px; padding-bottom: 6px; }
+  header h1 { font-size: 18px; }
+  .subtitle { font-size: 11px; width: 100%; order: 10; }
+  .mode-btn { padding: 5px 10px; font-size: 11px; }
+  .status-bar { font-size: 11px; }
+
+  /* 配置面板单列 */
+  .config-grid { grid-template-columns: 1fr; gap: 4px 0; }
+  .config-row { gap: 6px; }
+  .config-row label { width: 55px; font-size: 11px; }
+  .config-slider { height: 20px; min-height: 20px; }
+  .config-val { width: 35px; font-size: 11px; }
+  .config-slider::-webkit-slider-thumb { width: 22px; height: 22px; }
+  .btn-primary { padding: 8px 10px; font-size: 12px; }
+
+  /* 结果区单列 */
+  #bt-result-area { grid-template-columns: 1fr !important; gap: 8px !important; }
+  /* 手机上回测历史显示在顶部 */
+  #bt-result-area > #bt-history-panel { order: -1; }
+
+  /* 指标网格 2 列 */
+  .metric-grid { grid-template-columns: repeat(2, 1fr); gap: 4px 6px; }
+  .metric .value { font-size: 13px; }
+
+  /* 图表 */
+  .chart-card canvas { height: 140px; max-height: 140px; }
+
+  /* 持仓列表 */
+  #bt-positions > div { grid-template-columns: 1fr !important; gap: 6px !important; }
+
+  /* 日志 */
+  .log-card { max-height: 180px; }
+  #bt-log-list, #log-list { max-height: 120px; font-size: 10px; }
+
+  /* 仓位表格紧凑 */
+  #bt-long-list > div, #bt-short-list > div { font-size: 10px !important; }
+
+  /* 模式切换 radio 紧凑 */
+  label[style*="cursor:pointer"] { padding: 4px 6px !important; font-size: 11px !important; }
+  label[style*="cursor:pointer"] input { margin: 0; }
+
+  /* 历史列表 */
+  #bt-history-list { max-height: 300px !important; font-size: 11px !important; }
+  #bt-history-list button { font-size: 10px !important; padding: 2px 6px !important; }
+}

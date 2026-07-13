@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HermesX 双账户对冲模拟系统</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🏛️ HermesX</h1>
+    <span class="subtitle">双账户对冲 · 实时模拟</span>
+    <!-- 模式切换 -->
+    <div class="mode-toggle">
+      <button id="btn-live" class="mode-btn active" data-mode="live">🔴 实时</button>
+      <button id="btn-backtest" class="mode-btn" data-mode="backtest">🟡 回测</button>
+    </div>
+    <div class="status-bar">
+      <span id="status-indicator" class="status-dot offline"></span>
+      <span id="status-text">等待连接...</span>
+    </div>
+  </header>
+
+  <!-- ========== 实时模式面板 ========== -->
+  <div id="live-panels" class="dashboard-grid">
+    <!-- 实时模式复用回测结果区，只需要配置栏 -->
+    <section class="card config-card" style="margin-bottom:12px">
+      <h2>⚙️ 实时配置</h2>
+      <div id="live-mode-badge" style="margin-bottom:8px;font-size:11px;padding:4px 8px;border-radius:4px;background:rgba(34,197,94,0.1);color:#22c55e;display:inline-block">🟢 本地模拟</div>
+      <div class="config-grid">
+        <div class="config-row" style="grid-column:span 2">
+          <label>交易对</label>
+          <input type="text" id="live-symbol" value="btcusdt" class="config-input" readonly>
+        </div>
+        <div class="config-row">
+          <label>止损 %</label>
+          <input type="range" id="live-stop" min="0.1" max="10" step="0.1" value="3" class="config-slider">
+          <input type="text" id="live-stop-val" class="config-input-val" value="3.0%" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row">
+          <label>止盈 %</label>
+          <input type="range" id="live-tp" min="0.1" max="20" step="0.1" value="5" class="config-slider">
+          <input type="text" id="live-tp-val" class="config-input-val" value="5.0%" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row">
+          <label>每单 $</label>
+          <input type="range" id="live-amount" min="1" max="500" step="1" value="100" class="config-slider">
+          <input type="text" id="live-amount-val" class="config-input-val" value="$100" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+
+        <div class="config-row">
+          <label>杠杆</label>
+          <input type="range" id="live-leverage" min="1" max="100" step="1" value="3" class="config-slider">
+          <input type="text" id="live-leverage-val" class="config-input-val" value="3x" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row" style="grid-column:span 2">
+          <label>周期</label>
+          <select id="live-interval" class="config-input">
+            <option value="1m">1 分钟</option>
+            <option value="3m">3 分钟</option>
+            <option value="5m">5 分钟</option>
+            <option value="15m">15 分钟</option>
+            <option value="30m">30 分钟</option>
+            <option value="1h" selected>1 小时</option>
+            <option value="2h">2 小时</option>
+            <option value="4h">4 小时</option>
+            <option value="6h">6 小时</option>
+            <option value="8h">8 小时</option>
+            <option value="12h">12 小时</option>
+            <option value="1d">1 天</option>
+          </select>
+        </div>
+        <div class="config-row" style="grid-column:span 2">
+          <label>方向</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="live-direction" value="both" checked> 多空双开
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="live-direction" value="long"> 只开多
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="live-direction" value="short"> 只开空
+            </label>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;grid-column:span 2;margin-top:2px">
+          <button id="live-start-btn" class="btn-primary" style="flex:1">🚀 启动实时</button>
+          <button id="live-stop-btn" class="btn-primary" disabled style="flex:1">⏹️ 停止实时</button>
+        </div>
+        <div style="display:flex;gap:6px;grid-column:span 2;align-items:center;padding:4px 0;font-size:12px">
+          <span style="color:#888">交易模式:</span>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;padding:3px 10px;border-radius:4px;background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3)">
+            <input type="radio" name="live-mode" value="sim" checked style="accent-color:#22c55e"> 🟢 模拟
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;padding:3px 10px;border-radius:4px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2)">
+            <input type="radio" name="live-mode" value="real" style="accent-color:#ef4444"> 🔴 真实
+          </label>
+        </div>
+      </div>
+    </section>
+    <!-- 实时模式结果：复用 backtest-panels 内部的 bt-result-area -->
+  </div>
+  <!-- ========== 回测模式面板 ========== -->
+  <div id="backtest-panels" class="dashboard-grid hidden">
+    <!-- 配置面板 -->
+    <section class="card config-card" id="bt-config">
+      <h2>⚙️ 配置</h2>
+      <div class="config-grid">
+        <div class="config-row" style="grid-column:span 2">
+          <label>交易对</label>
+          <input type="text" id="bt-symbol" value="btcusdt" class="config-input">
+        </div>
+        <div class="config-row">
+          <label>天数</label>
+          <input type="range" id="bt-days" min="1" max="365" value="10" class="config-slider">
+          <input type="text" id="bt-days-val" class="config-input-val" value="10" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row">
+          <label>K线周期</label>
+          <select id="bt-interval" class="config-input">
+            <option value="1m">1 分钟</option>
+            <option value="3m">3 分钟</option>
+            <option value="5m">5 分钟</option>
+            <option value="15m">15 分钟</option>
+            <option value="30m">30 分钟</option>
+            <option value="1h">1 小时</option>
+            <option value="2h">2 小时</option>
+            <option value="4h">4 小时</option>
+            <option value="6h">6 小时</option>
+            <option value="12h">12 小时</option>
+            <option value="1d">1 天</option>
+          </select>
+        </div>
+        <div class="config-row">
+          <label>止损 %</label>
+          <input type="range" id="bt-stop" min="0.1" max="10" step="0.1" value="3" class="config-slider">
+          <input type="text" id="bt-stop-val" class="config-input-val" value="3.0%" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row">
+          <label>止盈 %</label>
+          <input type="range" id="bt-tp" min="0.1" max="20" step="0.1" value="5" class="config-slider">
+          <input type="text" id="bt-tp-val" class="config-input-val" value="5.0%" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row">
+          <label>每单 $</label>
+          <input type="range" id="bt-amount" min="1" max="500" step="1" value="100" class="config-slider">
+          <input type="text" id="bt-amount-val" class="config-input-val" value="$100" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row">
+          <label>初始 $</label>
+          <input type="range" id="bt-initial-balance" min="10" max="10000" step="10" value="1000" class="config-slider">
+          <input type="text" id="bt-initial-balance-val" class="config-input-val" value="1000" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row">
+          <label>杠杆</label>
+          <input type="range" id="bt-leverage" min="1" max="100" step="1" value="3" class="config-slider">
+          <input type="text" id="bt-leverage-val" class="config-input-val" value="3x" style="width:55px;text-align:right;font-size:13px;font-weight:600;font-family:monospace;background:var(--bg);border:1px solid var(--card-border);border-radius:4px;padding:3px 6px;color:var(--text);outline:none">
+        </div>
+        <div class="config-row" style="grid-column:span 2">
+          <label>方向</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="bt-direction" value="both" checked> 多空双开
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="bt-direction" value="long"> 只开多
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="bt-direction" value="short"> 只开空
+            </label>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;grid-column:span 2;margin-top:2px">
+          <button id="bt-init-btn" class="btn-primary" style="flex:1">📥 初始化</button>
+          <button id="bt-step-btn" class="btn-primary" disabled style="flex:1">▶ 下一步</button>
+          <button id="bt-runall-btn" class="btn-primary" disabled style="flex:1">▶▶ 全部</button>
+        </div>
+      </div>
+    </section>
+
+        <!-- 结果区由共享区提供 -->
+</div>
+
+  
+<!-- 左右两列：结果区 + 历史（等宽） -->
+    <div id="bt-result-area" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;grid-column:1/-1">
+      <!-- 左列：进度/持仓/图表/日志 -->
+      <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+        <!-- 进度 -->
+        <section class="card" id="bt-progress">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h2 id="bt-progress-title" style="margin:0">📊 进度</h2>
+          </div>
+          <div class="metric-grid">
+            <div class="metric"><label>K 线</label><span id="bt-progress-text" class="value">0 / 0</span></div>
+            <div class="metric"><label>权益</label><span id="bt-equity" class="value">--</span></div>
+            <div class="metric"><label>总盈亏</label><span id="bt-pnl" class="value">--</span></div>
+            <div class="metric"><label>收益率</label><span id="bt-return" class="value">--</span></div>
+            <div class="metric"><label>活跃单数</label><span id="bt-lot-count" class="value">0</span></div>
+            <div class="metric"><label>手续费</label><span id="bt-fee" class="value">--</span></div>
+            <div class="metric"><label>冻结保证金</label><span id="bt-margin" class="value">--</span></div>
+            <div class="metric"><label>开单数</label><span id="bt-total-open" class="value">0</span></div>
+            <div class="metric"><label>止盈单</label><span id="bt-tp-count" class="value">0</span></div>
+            <div class="metric"><label>止盈金额</label><span id="bt-tp-amount" class="value">--</span></div>
+            <div class="metric"><label>止损单</label><span id="bt-sl-count" class="value">0</span></div>
+            <div class="metric"><label>止损金额</label><span id="bt-sl-amount" class="value">--</span></div>
+          </div>
+        </section>
+
+        <!-- 仓位列表 -->
+        <section class="card" id="bt-positions">
+          <h2>📋 持仓</h2>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <h3 style="color:#22c55e;margin:4px 0">🟢 多单</h3>
+              <div id="bt-long-list" style="max-height:240px;overflow-y:auto;font-size:12px">
+                <p class="empty-hint">暂无</p>
+              </div>
+            </div>
+            <div>
+              <h3 style="color:#ef4444;margin:4px 0">🔴 空单</h3>
+              <div id="bt-short-list" style="max-height:240px;overflow-y:auto;font-size:12px">
+                <p class="empty-hint">暂无</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 图表 -->
+        <section class="card" id="bt-chart-section">
+          <h2>📈 收益曲线</h2>
+          <div style="position:relative;height:260px">
+            <canvas id="bt-chart"></canvas>
+          </div>
+          <div id="bt-pnl-table" style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px"></div>
+        </section>
+
+        <!-- 操作日志 -->
+        <section class="card" id="bt-log">
+          <h2>📋 操作日志</h2>
+          <div id="bt-log-list" style="max-height:150px;overflow-y:auto;font-size:12px;font-family:monospace"></div>
+        </section>
+      </div>
+
+      <!-- 右列：回测历史 -->
+      <section class="card" id="bt-history-panel" style="align-self:flex-start">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h2 style="margin:0;font-size:14px">📂 回测历史</h2>
+          <button id="bt-history-refresh" class="btn-small" style="font-size:12px;padding:4px 12px" onclick="refreshHistory()">🔄 刷新</button>
+        </div>
+        <div id="bt-history-list" style="max-height:500px;overflow-y:auto;font-size:12px">
+          <p class="empty-hint" style="padding:20px 0;text-align:center" id="bt-history-empty">暂无记录</p>
+        </div>
+      </section>
+    </div>
+  
+
+
+
+<script src="dashboard.js?v=5"></script>
+
+
+<script>
+function refreshHistory() {
+  var btn = document.getElementById('bt-history-refresh');
+  btn.textContent = '⏳ 刷新中...';
+  btn.disabled = true;
+  fetch('/api/history').then(function(r){ return r.json(); }).then(function(data){
+    var el = document.getElementById('bt-history-list');
+    if (!data.success || !data.items || !el) return;
+    if (data.items.length === 0) { el.innerHTML = '<p class="empty-hint">暂无记录</p>'; return; }
+    el.innerHTML = data.items.map(function(item) {
+      var dt = new Date(item.timestamp);
+      var tm = dt.getFullYear()+'-'+(dt.getMonth()+1)+'-'+dt.getDate()+' '+String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0');
+      var pc = item.totalReturnPct >= 0 ? '#22c55e' : '#ef4444';
+      var sign = item.totalReturnPct >= 0 ? '+' : '';
+      return '<div class="history-item" style="display:flex;align-items:center;gap:6px;padding:5px 6px;border-bottom:1px solid #2a2d3a;cursor:pointer;font-size:11px">'
+        +'<span style="color:#888;width:130px;flex-shrink:0">'+tm+'</span>'
+        +'<span style="color:#aaa;width:50px">'+item.symbol.toUpperCase()+'</span>'
+        +'<span style="color:#888;width:24px">'+item.days+'d</span>'
+        +'<span style="color:'+pc+';width:65px;font-weight:600">'+sign+item.totalReturnPct+'%</span>'
+        +'<span style="color:#f59e0b;width:44px">🛑'+item.stopCount+'</span>'
+        +'<span style="color:#888;width:40px">📋'+item.orderCount+'</span>'
+        +'<span style="flex:1"></span>'
+        +'<button style="font-size:10px;padding:1px 6px;background:#2a2d3a;border:none;border-radius:3px;color:#e8e8e8;cursor:pointer" onclick="showHistoryDetail(\''+item.id+'\')">查看</button>'
+        +'<button style="font-size:10px;padding:1px 4px;background:transparent;border:none;color:#ef4444;cursor:pointer" onclick="deleteHistoryItem(\''+item.id+'\')">✕</button>'
+        +'</div>';
+    }).join('');
+  })['catch'](function(){ btn.textContent = '❌ 失败'; })
+  ['finally'](function(){ btn.textContent = '🔄 刷新'; btn.disabled = false; });
+}
+</script>
+
+</body>
+</html>

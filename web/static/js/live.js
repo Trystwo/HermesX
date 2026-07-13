@@ -9,15 +9,16 @@ export function initLive() {
   bindSlider('live-tp', 'live-tp-val', '%');
   bindSlider('live-amount', 'live-amount-val', '');
   bindSlider('live-leverage', 'live-leverage-val', 'x');
+
+  document.getElementById('live-toggle-btn')?.addEventListener('click', toggleLive);
 }
 
-// Called from HTML onclick attribute
-window.toggleLive = async function() {
+async function toggleLive() {
   const btn = document.getElementById('live-toggle-btn');
+  if (!btn) return;
+
   if (AppState.liveRunning) {
-    try {
-      await fetch('/api/live/stop', { method: 'POST' });
-    } catch (err) { /* ignore */ }
+    await fetch('/api/live/stop', { method: 'POST' }).catch(() => {});
     AppState.liveRunning = false;
     btn.textContent = t('Start');
     btn.disabled = false;
@@ -25,18 +26,15 @@ window.toggleLive = async function() {
     return;
   }
 
-  btn.disabled = true;
   btn.textContent = t('Starting') + '...';
-  await startLive();
-};
+  btn.disabled = true;
 
-async function startLive() {
   const modeRadio = document.querySelector('input[name="live-mode"]:checked');
   const liveMode = modeRadio ? modeRadio.value : 'sim';
 
   if (liveMode === 'real' && !confirm(t('Start REAL trading on Binance?'))) {
-    $('live-toggle-btn').disabled = false;
-    $('live-toggle-btn').textContent = t('Start');
+    btn.disabled = false;
+    btn.textContent = t('Start');
     return;
   }
 
@@ -57,11 +55,11 @@ async function startLive() {
       body: JSON.stringify({ config }),
     });
     const data = await res.json();
-    if (!data.success) { alert(t('Request failed') + ': ' + data.error); $('live-toggle-btn').disabled = false; $('live-toggle-btn').textContent = t('Start'); return; }
+    if (!data.success) { alert(t('Request failed') + ': ' + data.error); btn.textContent = t('Start'); btn.disabled = false; return; }
 
     AppState.liveRunning = true;
-    $('live-toggle-btn').textContent = t('Stop');
-    $('live-toggle-btn').disabled = false;
+    btn.textContent = t('Stop');
+    btn.disabled = false;
     setLiveConfigLocked(true);
 
     const stateRes = await fetch('/api/live/state');
@@ -70,7 +68,7 @@ async function startLive() {
       AppState.liveState = stateData.state;
       renderLiveState();
     }
-  } catch (err) { alert(t('Request failed') + ': ' + err.message); $('live-toggle-btn').disabled = false; $('live-toggle-btn').textContent = t('Start'); }
+  } catch (err) { alert(t('Request failed') + ': ' + err.message); btn.textContent = t('Start'); btn.disabled = false; }
 }
 
 export function renderLiveState() {
@@ -203,7 +201,7 @@ function renderLiveLots(containerId, lots, price, side) {
   }).join('');
 }
 
-function setLiveConfigLocked(locked) {
+export function setLiveConfigLocked(locked) {
   ['live-stop','live-tp','live-amount','live-leverage','live-interval','live-symbol'].forEach(id => {
     const el = $(id);
     if (el) el.disabled = locked;

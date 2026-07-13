@@ -75,7 +75,7 @@
           </div>
         </div>
         <div style="display:flex;gap:6px;grid-column:span 2;margin-top:2px">
-          <button id="live-toggle-btn" class="btn-primary" style="flex:1" data-i18n="Start" onclick="window.toggleLive()">Start</button>
+          <button id="live-toggle-btn" class="btn-primary" style="flex:1" data-i18n="Start">Start</button>
         </div>
         <div style="display:flex;gap:6px;grid-column:span 2;align-items:center;padding:4px 0;font-size:12px">
           <span style="color:#888" data-i18n="Mode">Mode:</span>
@@ -241,40 +241,8 @@
     </section>
   </div>
 
-  <script>
-  document.addEventListener('DOMContentLoaded',function(){
-    var b=document.getElementById('live-toggle-btn');if(!b)return;
-    b.addEventListener('click',function(){
-      if(b.getAttribute('data-running')==='true'){
-        fetch('/api/live/stop',{method:'POST'}).catch(function(){});
-        b.removeAttribute('data-running');
-        b.textContent=document.documentElement.lang==='zh-CN'?'启动':'Start';
-        return;
-      }
-      b.textContent=document.documentElement.lang==='zh-CN'?'启动中...':'Starting...';
-      b.disabled=true;
-      fetch('/api/live/start',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          config:{
-            leverage:Number(document.getElementById('live-leverage').value),
-            stopLossPercent:Number(document.getElementById('live-stop').value)/100,
-            takeProfitPercent:Number(document.getElementById('live-tp').value)/100,
-            positionAmountValue:Number(document.getElementById('live-amount').value),
-            mode:(document.querySelector('input[name="live-mode"]:checked')||{}).value||'sim',
-            interval:document.getElementById('live-interval').value,
-            direction:(document.querySelector('input[name="live-direction"]:checked')||{}).value||'both'
-          }
-        })
-      }).then(function(r){return r.json()}).then(function(d){
-        if(!d.success){alert('Error: '+d.error);b.textContent=document.documentElement.lang==='zh-CN'?'启动':'Start';b.disabled=false;return;}
-        b.setAttribute('data-running','true');
-        b.textContent=document.documentElement.lang==='zh-CN'?'停止':'Stop';
-        b.disabled=false;
-      }).catch(function(e){alert('Error: '+e.message);b.textContent=document.documentElement.lang==='zh-CN'?'启动':'Start';b.disabled=false;});
-    });
-  });
-  </script>
-  <script type="module" src="/static/js/app.js"></script>
+  <script type="module" src="/static/js/app.js?v=1"></script>
+</body>
+</html>
 </body>
 </html>

@@ -1,6 +1,6 @@
 // WebSocket connection management
 import { AppState } from './state.js';
-import { renderLiveState } from './live.js';
+import { renderLiveState, setLiveConfigLocked } from './live.js';
 import { $ } from './ui.js';
 import { t } from './i18n.js';
 
@@ -47,11 +47,3 @@ export function connect() {
   };
 }
 
-function setLiveConfigLocked(locked) {
-  ['live-stop','live-tp','live-amount','live-leverage','live-interval','live-symbol'].forEach(id => {
-    const el = $(id);
-    if (el) el.disabled = locked;
-  });
-  document.querySelectorAll('input[name="live-direction"]').forEach(r => r.disabled = locked);
-  document.querySelectorAll('input[name="live-mode"]').forEach(r => r.disabled = locked);
-}

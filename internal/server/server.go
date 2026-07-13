@@ -44,11 +44,18 @@ func New(engine *strategy.Engine, runner *backtest.Runner, store *store.Store, c
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 
-	// Static files
+	// Static files (no-cache for JS modules)
 	workDir, _ := os.Getwd()
 	staticDir := filepath.Join(workDir, "web", "static")
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
+	fs := http.FileServer(http.Dir(staticDir))
+	r.Handle("/static/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		http.StripPrefix("/static/", fs).ServeHTTP(w, r)
+	}))
 	r.Handle("/style.css", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		http.ServeFile(w, r, filepath.Join(workDir, "web", "style.css"))
 	}))
 

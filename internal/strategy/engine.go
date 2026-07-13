@@ -188,6 +188,18 @@ func (e *Engine) Start(currentPrice float64, currentHour int64) {
 	e.log("engine started")
 	e.logf("initial price: $%.2f", currentPrice)
 	e.logf("mode: %s", e.cfg.Mode)
+	if e.trade != nil {
+		sym := strings.ToUpper(e.cfg.Symbol)
+		ctx := context.Background()
+		if err := e.trade.SetHedgeMode(ctx); err != nil {
+			e.logf("set hedge mode err: %v", err)
+		} else {
+			e.log("hedge mode enabled")
+		}
+		if err := e.trade.SetLeverage(ctx, sym, e.cfg.Leverage); err != nil {
+			e.logf("set leverage err: %v", err)
+		}
+	}
 
 	e.stateMu.Unlock()
 	e.processNewHour(currentPrice, currentHour)

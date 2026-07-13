@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HermesX</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>HermesX</h1>
+    <span class="subtitle" data-i18n="subtitle">Multi-directional Backtest & Live</span>
+    <div class="mode-toggle">
+      <button id="btn-live" class="mode-btn active" data-mode="live" data-i18n="Live">Live</button>
+      <button id="btn-backtest" class="mode-btn" data-mode="backtest" data-i18n="Backtest">Backtest</button>
+    </div>
+    <button id="lang-toggle" style="margin-left:4px;padding:4px 10px;border:1px solid var(--card-border);border-radius:6px;background:transparent;color:var(--text-muted);cursor:pointer;font-size:12px;font-weight:600">EN</button>
+    <div class="status-bar">
+      <span id="status-indicator" class="status-dot offline"></span>
+      <span id="status-text" data-i18n="Connecting">Connecting...</span>
+    </div>
+  </header>
+
+  <div id="live-panels" class="dashboard-grid">
+    <section class="card config-card" style="margin-bottom:12px">
+      <h2 data-i18n="Live Config">Live Config</h2>
+      <div id="live-mode-badge" style="margin-bottom:8px;font-size:11px;padding:4px 8px;border-radius:4px;background:rgba(34,197,94,0.1);color:#22c55e;display:inline-block" data-i18n="Simulation">Simulation</div>
+      <div class="config-grid">
+        <div class="config-row" style="grid-column:span 2">
+          <label data-i18n="Symbol">Symbol</label>
+          <input type="text" id="live-symbol" value="btcusdt" class="config-input" readonly>
+        </div>
+        <div class="config-row">
+          <label data-i18n="Stop Loss %">Stop Loss %</label>
+          <input type="range" id="live-stop" min="0.1" max="10" step="0.1" value="3" class="config-slider">
+          <input type="text" id="live-stop-val" class="config-input-val" value="3.0%">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Take Profit %">Take Profit %</label>
+          <input type="range" id="live-tp" min="0.1" max="20" step="0.1" value="5" class="config-slider">
+          <input type="text" id="live-tp-val" class="config-input-val" value="5.0%">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Amount $">Amount $</label>
+          <input type="range" id="live-amount" min="1" max="500" step="1" value="100" class="config-slider">
+          <input type="text" id="live-amount-val" class="config-input-val" value="$100">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Leverage">Leverage</label>
+          <input type="range" id="live-leverage" min="1" max="100" step="1" value="3" class="config-slider">
+          <input type="text" id="live-leverage-val" class="config-input-val" value="3x">
+        </div>
+        <div class="config-row" style="grid-column:span 2">
+          <label data-i18n="Interval">Interval</label>
+          <select id="live-interval" class="config-input">
+            <option value="1m">1 min</option><option value="3m">3 min</option><option value="5m">5 min</option>
+            <option value="15m">15 min</option><option value="30m">30 min</option><option value="1h" selected>1 hour</option>
+            <option value="2h">2 hours</option><option value="4h">4 hours</option><option value="6h">6 hours</option>
+            <option value="8h">8 hours</option><option value="12h">12 hours</option><option value="1d">1 day</option>
+          </select>
+        </div>
+        <div class="config-row" style="grid-column:span 2">
+          <label data-i18n="Direction">Direction</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="live-direction" value="both" checked> <span data-i18n="Both">Both</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="live-direction" value="long"> <span data-i18n="Long Only">Long Only</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="live-direction" value="short"> <span data-i18n="Short Only">Short Only</span>
+            </label>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;grid-column:span 2;margin-top:2px">
+          <button id="live-start-btn" class="btn-primary" style="flex:1" data-i18n="Start Live">Start Live</button>
+          <button id="live-stop-btn" class="btn-primary" disabled style="flex:1" data-i18n="Stop Live">Stop Live</button>
+        </div>
+        <div style="display:flex;gap:6px;grid-column:span 2;align-items:center;padding:4px 0;font-size:12px">
+          <span style="color:#888" data-i18n="Mode">Mode:</span>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;padding:3px 10px;border-radius:4px;background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3)">
+            <input type="radio" name="live-mode" value="sim" checked> <span data-i18n="Sim">Sim</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;padding:3px 10px;border-radius:4px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2)">
+            <input type="radio" name="live-mode" value="real"> <span data-i18n="Real">Real</span>
+          </label>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="backtest-panels" class="dashboard-grid hidden">
+    <section class="card config-card" id="bt-config">
+      <h2 data-i18n="Backtest Config">Backtest Config</h2>
+      <div class="config-grid">
+        <div class="config-row" style="grid-column:span 2">
+          <label data-i18n="Symbol">Symbol</label>
+          <input type="text" id="bt-symbol" value="btcusdt" class="config-input">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Days">Days</label>
+          <input type="range" id="bt-days" min="1" max="365" value="10" class="config-slider">
+          <input type="text" id="bt-days-val" class="config-input-val" value="10">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Interval">Interval</label>
+          <select id="bt-interval" class="config-input">
+            <option value="1m">1 min</option><option value="3m">3 min</option><option value="5m">5 min</option>
+            <option value="15m">15 min</option><option value="30m">30 min</option><option value="1h">1 hour</option>
+            <option value="2h">2 hours</option><option value="4h">4 hours</option><option value="6h">6 hours</option>
+            <option value="12h">12 hours</option><option value="1d">1 day</option>
+          </select>
+        </div>
+        <div class="config-row">
+          <label data-i18n="Stop Loss %">Stop Loss %</label>
+          <input type="range" id="bt-stop" min="0.1" max="10" step="0.1" value="3" class="config-slider">
+          <input type="text" id="bt-stop-val" class="config-input-val" value="3.0%">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Take Profit %">Take Profit %</label>
+          <input type="range" id="bt-tp" min="0.1" max="20" step="0.1" value="5" class="config-slider">
+          <input type="text" id="bt-tp-val" class="config-input-val" value="5.0%">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Amount $">Amount $</label>
+          <input type="range" id="bt-amount" min="1" max="500" step="1" value="100" class="config-slider">
+          <input type="text" id="bt-amount-val" class="config-input-val" value="$100">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Initial $">Initial $</label>
+          <input type="range" id="bt-initial-balance" min="10" max="10000" step="10" value="1000" class="config-slider">
+          <input type="text" id="bt-initial-balance-val" class="config-input-val" value="1000">
+        </div>
+        <div class="config-row">
+          <label data-i18n="Leverage">Leverage</label>
+          <input type="range" id="bt-leverage" min="1" max="100" step="1" value="3" class="config-slider">
+          <input type="text" id="bt-leverage-val" class="config-input-val" value="3x">
+        </div>
+        <div class="config-row" style="grid-column:span 2">
+          <label data-i18n="Direction">Direction</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="bt-direction" value="both" checked> <span data-i18n="Both">Both</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="bt-direction" value="long"> <span data-i18n="Long Only">Long Only</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:#aaa">
+              <input type="radio" name="bt-direction" value="short"> <span data-i18n="Short Only">Short Only</span>
+            </label>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;grid-column:span 2;margin-top:2px">
+          <button id="bt-init-btn" class="btn-primary" style="flex:1" data-i18n="Init">Init</button>
+          <button id="bt-step-btn" class="btn-primary" disabled style="flex:1" data-i18n="Step">Step</button>
+          <button id="bt-runall-btn" class="btn-primary" disabled style="flex:1" data-i18n="Run All">Run All</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="bt-result-area" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;grid-column:1/-1">
+    <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+      <section class="card" id="bt-progress">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h2 id="bt-progress-title" style="margin:0" data-i18n="Progress">Progress</h2>
+        </div>
+        <div class="metric-grid">
+          <div class="metric"><label data-i18n="Candles">Candles</label><span id="bt-progress-text" class="value">0 / 0</span></div>
+          <div class="metric"><label data-i18n="Equity">Equity</label><span id="bt-equity" class="value">--</span></div>
+          <div class="metric"><label data-i18n="P&L">P&L</label><span id="bt-pnl" class="value">--</span></div>
+          <div class="metric"><label data-i18n="Return">Return</label><span id="bt-return" class="value">--</span></div>
+          <div class="metric"><label data-i18n="Active Lots">Active Lots</label><span id="bt-lot-count" class="value">0</span></div>
+          <div class="metric"><label data-i18n="Fees">Fees</label><span id="bt-fee" class="value">--</span></div>
+          <div class="metric"><label data-i18n="Margin">Margin</label><span id="bt-margin" class="value">--</span></div>
+          <div class="metric"><label data-i18n="Opens">Opens</label><span id="bt-total-open" class="value">0</span></div>
+          <div class="metric"><label data-i18n="TP Count">TP Count</label><span id="bt-tp-count" class="value">0</span></div>
+          <div class="metric"><label data-i18n="TP Amount">TP Amount</label><span id="bt-tp-amount" class="value">--</span></div>
+          <div class="metric"><label data-i18n="SL Count">SL Count</label><span id="bt-sl-count" class="value">0</span></div>
+          <div class="metric"><label data-i18n="SL Amount">SL Amount</label><span id="bt-sl-amount" class="value">--</span></div>
+        </div>
+      </section>
+
+      <section class="card" id="bt-positions">
+        <h2 data-i18n="Positions">Positions</h2>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <h3 style="color:#22c55e;margin:4px 0" data-i18n="Long">Long</h3>
+            <div id="bt-long-list" style="max-height:240px;overflow-y:auto;font-size:12px">
+              <p class="empty-hint" data-i18n="None">None</p>
+            </div>
+          </div>
+          <div>
+            <h3 style="color:#ef4444;margin:4px 0" data-i18n="Short">Short</h3>
+            <div id="bt-short-list" style="max-height:240px;overflow-y:auto;font-size:12px">
+              <p class="empty-hint" data-i18n="None">None</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="bt-chart-section">
+        <h2 data-i18n="Equity Curve">Equity Curve</h2>
+        <div style="position:relative;height:260px">
+          <canvas id="bt-chart"></canvas>
+        </div>
+        <div id="bt-pnl-table" style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px"></div>
+      </section>
+
+      <section class="card" id="bt-log">
+        <h2 data-i18n="Log">Log</h2>
+        <div id="bt-log-list" style="max-height:150px;overflow-y:auto;font-size:12px;font-family:monospace"></div>
+      </section>
+    </div>
+
+    <section class="card" id="bt-history-panel" style="align-self:flex-start">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h2 style="margin:0;font-size:14px" data-i18n="History">History</h2>
+        <button id="bt-history-refresh" class="btn-small" style="font-size:12px;padding:4px 12px" data-i18n="Refresh">Refresh</button>
+      </div>
+      <div id="bt-history-list" style="max-height:500px;overflow-y:auto;font-size:12px">
+        {{if .History}}
+        {{range .History}}
+        <div class="history-item" data-id="{{.ID}}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--card-border);cursor:pointer">
+          <span style="color:#888;width:140px;flex-shrink:0;font-size:11px">{{.Timestamp}}</span>
+          <span style="color:#aaa;width:70px;font-size:11px">{{.Symbol}}</span>
+          <span style="color:#888;width:30px;font-size:11px">{{.Days}}d</span>
+          <span style="color:{{if ge .TotalReturnPct 0}}#22c55e{{else}}#ef4444{{end}};width:70px;font-weight:600;font-size:12px">{{if ge .TotalReturnPct 0}}+{{end}}{{.TotalReturnPct}}%</span>
+          <span style="color:#f59e0b;width:60px;font-size:11px">SL:{{.StopCount}}</span>
+          <span style="color:#888;width:50px;font-size:11px">Ord:{{.OrderCount}}</span>
+          <span style="flex:1"></span>
+          <button class="btn-view" style="font-size:11px;padding:2px 8px;background:var(--card-border);border:none;border-radius:4px;color:var(--text);cursor:pointer" data-i18n="View">View</button>
+          <button class="btn-del" style="font-size:11px;padding:2px 6px;background:transparent;border:none;color:#ef4444;cursor:pointer">x</button>
+        </div>
+        {{end}}
+        {{else}}
+        <p class="empty-hint" style="padding:20px 0;text-align:center" data-i18n="No records">No records</p>
+        {{end}}
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

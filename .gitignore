@@ -4,3 +4,18 @@ hermesx.log
 .env
 *.py
 output/*.csv
+
+# Go binaries
+*.exe
+*.exe~
+hermesx
+
+# Project data
+hermesx.db
+
+# IDE
+.idea/
+.vscode/
+
+# Reasonix
+.reasonix/

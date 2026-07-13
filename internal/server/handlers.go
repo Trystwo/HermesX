@@ -236,7 +236,9 @@ func (h *Handlers) handleLiveStart(w http.ResponseWriter, r *http.Request) {
 	h.engine.UpdateConfig(cfg)
 
 	price := 0.0
-	h.engine.Start(price, timestampHour(time.Now().UnixMilli()))
+	// Start engine asynchronously — API calls (balance, hedge mode, leverage, open)
+	// may take several seconds and shouldn't block the HTTP response.
+	go h.engine.Start(price, timestampHour(time.Now().UnixMilli()))
 
 	writeJSON(w, map[string]interface{}{"success": true})
 }

@@ -54,7 +54,7 @@ func NewClient(baseURL, apiKey, apiSecret string) *Client {
 		baseURL:           baseURL,
 		apiKey:            apiKey,
 		apiSecret:         apiSecret,
-		httpClient:        &http.Client{Timeout: 10 * time.Second},
+		httpClient:        &http.Client{Timeout: 30 * time.Second},
 		QuantityPrecision: 6,
 		PricePrecision:    1,
 	}

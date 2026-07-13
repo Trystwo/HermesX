@@ -398,6 +398,17 @@ export function createServer() {
     clients.add(ws);
     console.log('[WS] 客户端已连接');
 
+    // 新连接时立即推送当前 liveEngine 状态（解决刷新后页面重置问题）
+    try {
+      const state = liveEngine.getState();
+      if (state.running) {
+        const msg = JSON.stringify({ type: 'liveState', state });
+        if (ws.readyState === WsClient.OPEN) {
+          ws.send(msg);
+        }
+      }
+    } catch { /* ignore push error on connect */ }
+
     ws.on('close', () => {
       clients.delete(ws);
       console.log('[WS] 客户端已断开');

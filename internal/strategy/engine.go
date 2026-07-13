@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"strings"
+
 	"hermesx/internal/account"
 	"hermesx/internal/exchange"
 	"hermesx/internal/market"
@@ -27,6 +29,11 @@ type EngineConfig struct {
 	Interval            string  `json:"interval"`
 	Mode                string  `json:"mode"`
 	Direction           string  `json:"direction"`
+	BinanceAPIKey       string  `json:"-"`
+	BinanceAPISecret    string  `json:"-"`
+	BinanceTestnet      bool    `json:"-"`
+	TestnetAPIKey       string  `json:"-"`
+	TestnetSecret       string  `json:"-"`
 }
 
 type Snapshot struct {
@@ -86,11 +93,25 @@ func NewEngine(cfg EngineConfig, m market.Market) *Engine {
 		state: LiveState{Config: cfg},
 	}
 
-	if cfg.Mode == "real" {
+	// Real mode: production exchange client
+	if cfg.Mode == "real" && cfg.BinanceAPIKey != "" {
 		e.trade = exchange.NewClient(
 			"https://fapi.binance.com",
-			"", "",
+			cfg.BinanceAPIKey, cfg.BinanceAPISecret,
 		)
+	}
+
+	// Sim mode with testnet keys: testnet client
+	if cfg.Mode == "sim" && cfg.BinanceTestnet && cfg.TestnetAPIKey != "" {
+		log.Printf("[engine] testnet mode enabled, api key: %s...", cfg.TestnetAPIKey[:8])
+		e.trade = exchange.NewClient(
+			"https://testnet.binancefuture.com",
+			cfg.TestnetAPIKey, cfg.TestnetSecret,
+		)
+		e.trade.QuantityPrecision = 4
+		e.trade.PricePrecision = 2
+	} else {
+		log.Printf("[engine] sim mode (testnet=%v, hasKey=%v)", cfg.BinanceTestnet, cfg.TestnetAPIKey != "")
 	}
 
 	return e
@@ -143,6 +164,15 @@ func (e *Engine) Run(ctx context.Context) {
 
 func (e *Engine) Start(currentPrice float64, currentHour int64) {
 	e.stateMu.Lock()
+	if currentPrice <= 0 {
+		currentPrice = e.mkt.CurrentPrice()
+		if currentPrice <= 0 {
+			currentPrice = e.state.LastPrice
+		}
+	}
+	if currentHour <= 0 {
+		currentHour = getHourTimestamp(time.Now().UnixMilli(), e.cfg.Interval)
+	}
 	defer e.stateMu.Unlock()
 
 	if e.state.Running {
@@ -152,6 +182,7 @@ func (e *Engine) Start(currentPrice float64, currentHour int64) {
 	e.state.StartTime = time.Now().UnixMilli()
 	e.state.LastPrice = currentPrice
 	e.state.CurrentHour = currentHour
+	e.state.Balance = e.cfg.InitialBalance
 	e.lastCheckedHour = currentHour
 
 	e.log("engine started")
@@ -228,7 +259,40 @@ func (e *Engine) processNewHour(price float64, hourTs int64) {
 
 	openFee := 0.0
 	didOpen := false
-	if equity > 0 && available >= marginPerSide*float64(sides) {
+	useTrade := e.trade != nil && equity > 0 && available >= marginPerSide*float64(sides)
+	if useTrade {
+		qty := (marginPerSide * float64(cfg.Leverage)) / price
+		sym := strings.ToUpper(cfg.Symbol)
+
+		e.stateMu.Unlock()
+		if dir == "both" || dir == "long" {
+			r, err := e.trade.MarketOpen(context.Background(), "BUY", qty, "LONG", sym)
+			if err != nil {
+				e.logf("trade open long error: %v", err)
+			} else {
+				actionParts = append(actionParts, "open long")
+				entryPx := r.AvgPrice
+				if entryPx <= 0 { entryPx = price }
+				acct.OpenLong(entryPx, marginPerSide, float64(cfg.Leverage), feeRate, cfg.StopLossPercent, cfg.TakeProfitPercent)
+				openFee += marginPerSide * feeRate
+				didOpen = true
+			}
+		}
+		if dir == "both" || dir == "short" {
+			r, err := e.trade.MarketOpen(context.Background(), "SELL", qty, "SHORT", sym)
+			if err != nil {
+				e.logf("trade open short error: %v", err)
+			} else {
+				actionParts = append(actionParts, "open short")
+				entryPx := r.AvgPrice
+				if entryPx <= 0 { entryPx = price }
+				acct.OpenShort(entryPx, marginPerSide, float64(cfg.Leverage), feeRate, cfg.StopLossPercent, cfg.TakeProfitPercent)
+				openFee += marginPerSide * feeRate
+				didOpen = true
+			}
+		}
+		e.stateMu.Lock()
+	} else if equity > 0 && available >= marginPerSide*float64(sides) {
 		posValue := marginPerSide * float64(cfg.Leverage)
 
 		if dir == "both" || dir == "long" {
@@ -271,20 +335,48 @@ func (e *Engine) processNewHour(price float64, hourTs int64) {
 
 func (e *Engine) checkStopLoss() {
 	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
 
 	if len(e.state.LongLots) == 0 && len(e.state.ShortLots) == 0 {
+		e.stateMu.Unlock()
 		return
 	}
 
-	acct := account.New(e.state.Balance)
-	acct.LongLots = cloneLots(e.state.LongLots)
-	acct.ShortLots = cloneLots(e.state.ShortLots)
-
 	price := e.state.LastPrice
+	longLots := cloneLots(e.state.LongLots)
+	shortLots := cloneLots(e.state.ShortLots)
+	balance := e.state.Balance
+	cfg := e.cfg
+
+	// Check close conditions locally first
+	acct := account.New(balance)
+	acct.LongLots = longLots
+	acct.ShortLots = shortLots
 	stoppedLots := acct.CheckCloseConditions(price, price, feeRate)
+	e.stateMu.Unlock()
+
 	if len(stoppedLots) == 0 {
 		return
+	}
+
+	// If we have a trade client, close positions via exchange
+	if e.trade != nil {
+		ctx := context.Background()
+		sym := strings.ToUpper(cfg.Symbol)
+		for _, sl := range stoppedLots {
+			if sl.Quantity <= 0 { continue }
+			side := "SELL"
+			if sl.Side == "short" { side = "BUY" }
+			posSide := "LONG"
+			if sl.Side == "short" { posSide = "SHORT" }
+			if _, err := e.trade.MarketClose(ctx, side, sl.Quantity, posSide, sym); err != nil {
+				e.logf("trade close %s error: %v", sl.Side, err)
+			}
+		}
+		if bal, err := e.trade.GetBalance(ctx); err == nil {
+			e.stateMu.Lock()
+			e.state.Balance = bal.AvailableBalance
+			e.stateMu.Unlock()
+		}
 	}
 
 	closeFee := 0.0
@@ -300,9 +392,10 @@ func (e *Engine) checkStopLoss() {
 		parts = append(parts, fmtCount(tp, "tp"))
 	}
 
+	e.stateMu.Lock()
 	snap := makeSnapshot(
 		len(e.state.Snapshots), price, time.Now().UnixMilli(), acct, stoppedLots,
-		joinAction(parts), e.cfg.InitialBalance,
+		joinAction(parts), cfg.InitialBalance,
 	)
 
 	e.state.Balance = acct.Balance

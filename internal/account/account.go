@@ -21,6 +21,7 @@ type Lot struct {
 type StoppedLot struct {
 	Side       string  `json:"side"`
 	EntryPrice float64 `json:"entryPrice"`
+	Quantity   float64 `json:"quantity"`
 	ClosePrice float64 `json:"closePrice"`
 	PnL        float64 `json:"pnl"`
 	Fee        float64 `json:"fee"`
@@ -103,7 +104,8 @@ func (a *Account) CheckCloseConditions(prevHigh, prevLow, feeRate float64) []Sto
 		fee := price * lot.Quantity * feeRate
 		a.Balance += lot.Margin + pnl - fee
 		closed = append(closed, StoppedLot{
-			Side: "long", EntryPrice: lot.EntryPrice, ClosePrice: price,
+			Side: "long", EntryPrice: lot.EntryPrice, Quantity: lot.Quantity,
+			ClosePrice: price,
 			PnL: round2(pnl), Fee: round2(fee), Reason: reason,
 		})
 	}
@@ -113,7 +115,8 @@ func (a *Account) CheckCloseConditions(prevHigh, prevLow, feeRate float64) []Sto
 		fee := price * lot.Quantity * feeRate
 		a.Balance += lot.Margin + pnl - fee
 		closed = append(closed, StoppedLot{
-			Side: "short", EntryPrice: lot.EntryPrice, ClosePrice: price,
+			Side: "short", EntryPrice: lot.EntryPrice, Quantity: lot.Quantity,
+			ClosePrice: price,
 			PnL: round2(pnl), Fee: round2(fee), Reason: reason,
 		})
 	}

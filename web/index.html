@@ -356,41 +356,38 @@ async function btStep(){if(!btID)return;var b=document.getElementById('bt-step')
 async function btRunAll(){if(!btID)return;var b=document.getElementById('bt-all');b.disabled=true;document.getElementById('bt-step').disabled=true;var r=await btFetch('runAll',{id:btID});btState=r.state;btRender();loadHistory();}
 
 function btRender(){
-  var s=btState,t=s.candles.length,idx=s.currentIndex,ib=s.initialBalance||1000;
-  var pr=idx>0&&s.candles?s.candles[idx-1].open:0,tm=0,up=0;
-  for(var i=0;i<(s.longLots||[]).length;i++){var l=s.longLots[i];tm+=l.margin||0;up+=(pr-l.entryPrice)*l.quantity;}
-  for(var i=0;i<(s.shortLots||[]).length;i++){var l=s.shortLots[i];tm+=l.margin||0;up+=(l.entryPrice-pr)*l.quantity;}
-  var eq=s.balance+tm+up,tp=eq-ib,rt=ib>0?(tp/ib*100):0;
-  document.getElementById('bt-prog').textContent=idx+'/'+t;
-  document.getElementById('bt-eq').textContent=fp(eq);
-  document.getElementById('bt-pnl').textContent=fu(tp);document.getElementById('bt-pnl').className='val '+(tp>=0?'pos':'neg');
-  document.getElementById('bt-ret').textContent=(rt>=0?'+':'')+rt.toFixed(2)+'%';document.getElementById('bt-ret').className='val '+(rt>=0?'pos':'neg');
-  document.getElementById('bt-lots').textContent=(s.longLots||[]).length+(s.shortLots||[]).length;
-  document.getElementById('bt-fee').textContent='$'+(s.totalFee||0).toFixed(2);
-  document.getElementById('bt-margin').textContent=fp(tm);
-  document.getElementById('bt-opens').textContent=s.totalOpenCount||0;
-
-  // Lots
-  btLots('bt-long',s.longLots||[],pr,'long');
-  btLots('bt-short',s.shortLots||[],pr,'short');
-
-  // Log
-  var log=s.snapshots.map(function(sn){
-    var d=new Date(sn.timestamp),tm=d.getMonth()+1+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':00';
-    var si='';
-    if(sn.stoppedLots&&sn.stoppedLots.length){si=' | '+sn.stoppedLots.map(function(l){return (l.reason==='tp'?'止盈':'止损')+' '+l.side+'@'+fp(l.closePrice);}).join(' ');}
-    return '<div style="font-size:11px">#'+sn.hour+' '+tm+' '+fp(sn.openPrice)+' '+sn.action+si+'</div>';
-  }).join('');
-  document.getElementById('bt-log').innerHTML=log||'<p class="empty">暂无</p>';
-  document.getElementById('bt-log').scrollTop=document.getElementById('bt-log').scrollHeight;
-
-  // Chart
-  var snaps=s.snapshots||[];
-  if(snaps.length>=2){
-    var ctx=document.getElementById('bt-chart').getContext('2d');
-    if(btChart)btChart.destroy();
-    btChart=new Chart(ctx,{type:'line',data:{labels:snaps.map(function(x){var d=new Date(x.timestamp);return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':00';}),datasets:[{label:'权益',data:snaps.map(function(x){return x.equity}),borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.08)',fill:true,tension:.2,pointRadius:0},{label:'初始',data:snaps.map(function(){return ib}),borderColor:'#888',borderDash:[4,4],tension:0,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{position:'top',labels:{boxWidth:12,font:{size:11}}}},scales:{x:{ticks:{maxTicksLimit:15,font:{size:10}}},y:{ticks:{font:{size:10},callback:function(v){return'$'+v}}}}}});
-  }
+  try{
+    var s=btState;if(!s)return;
+    var t=(s.candles||[]).length,idx=s.currentIndex||0,ib=s.initialBalance||1000;
+    var pr=idx>0&&s.candles?s.candles[idx-1].open:0,tm=0,up=0;
+    for(var i=0;i<(s.longLots||[]).length;i++){var l=s.longLots[i];tm+=l.margin||0;up+=(pr-l.entryPrice)*l.quantity;}
+    for(var i=0;i<(s.shortLots||[]).length;i++){var l=s.shortLots[i];tm+=l.margin||0;up+=(l.entryPrice-pr)*l.quantity;}
+    var eq=s.balance+tm+up,tp=eq-ib,rt=ib>0?(tp/ib*100):0;
+    document.getElementById('bt-prog').textContent=idx+'/'+t;
+    document.getElementById('bt-eq').textContent=fp(eq);
+    document.getElementById('bt-pnl').textContent=fu(tp);document.getElementById('bt-pnl').className='val '+(tp>=0?'pos':'neg');
+    document.getElementById('bt-ret').textContent=(rt>=0?'+':'')+rt.toFixed(2)+'%';document.getElementById('bt-ret').className='val '+(rt>=0?'pos':'neg');
+    document.getElementById('bt-lots').textContent=(s.longLots||[]).length+(s.shortLots||[]).length;
+    document.getElementById('bt-fee').textContent='$'+(s.totalFee||0).toFixed(2);
+    document.getElementById('bt-margin').textContent=fp(tm);
+    document.getElementById('bt-opens').textContent=s.totalOpenCount||0;
+    btLots('bt-long',s.longLots||[],pr,'long');
+    btLots('bt-short',s.shortLots||[],pr,'short');
+    var log=(s.snapshots||[]).map(function(sn){
+      var d=new Date(sn.timestamp),tm=d.getMonth()+1+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':00';
+      var si='';
+      if(sn.stoppedLots&&sn.stoppedLots.length){si=' | '+sn.stoppedLots.map(function(l){return (l.reason==='tp'?'止盈':'止损')+' '+l.side+'@'+fp(l.closePrice);}).join(' ');}
+      return '<div style="font-size:11px">#'+sn.hour+' '+tm+' '+fp(sn.openPrice)+' '+sn.action+si+'</div>';
+    }).join('');
+    document.getElementById('bt-log').innerHTML=log||'<p class="empty">暂无</p>';
+    document.getElementById('bt-log').scrollTop=document.getElementById('bt-log').scrollHeight;
+    var snaps=s.snapshots||[];
+    if(snaps.length>=2){
+      var ctx=document.getElementById('bt-chart').getContext('2d');
+      if(btChart)btChart.destroy();
+      btChart=new Chart(ctx,{type:'line',data:{labels:snaps.map(function(x){var d=new Date(x.timestamp);return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':00';}),datasets:[{label:'权益',data:snaps.map(function(x){return x.equity}),borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.08)',fill:true,tension:.2,pointRadius:0},{label:'初始',data:snaps.map(function(){return ib}),borderColor:'#888',borderDash:[4,4],tension:0,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{position:'top',labels:{boxWidth:12,font:{size:11}}}},scales:{x:{ticks:{maxTicksLimit:15,font:{size:10}}},y:{ticks:{font:{size:10},callback:function(v){return'$'+v}}}}}});
+    }
+  }catch(e){alert('Render error: '+e.message);}
 }
 function btLots(id,lots,pr,side){
   var el=document.getElementById(id);

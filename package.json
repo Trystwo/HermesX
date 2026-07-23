@@ -1,0 +1,28 @@
+{
+  "name": "hermesx",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HermesX - 数字货币合约对冲交易系统",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=backend",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "build:backend": "npm run build --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend",
+    "db:generate": "npm run prisma:generate --workspace=backend",
+    "db:migrate": "npm run prisma:migrate --workspace=backend",
+    "db:migrate:deploy": "npm run prisma:migrate:deploy --workspace=backend",
+    "db:migrate:baseline": "npm run prisma:migrate:baseline --workspace=backend",
+    "db:push": "npm run prisma:push --workspace=backend",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "dependencies": {
+    "binary-extensions": "^3.1.0",
+    "color-name": "^2.1.0",
+    "is-binary-path": "^3.0.0"
+  }
+}

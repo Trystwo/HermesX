@@ -1,0 +1,183 @@
+// HermesX Prisma Schema
+// 文档: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 用户 ============
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("users")
+}
+
+// ============ 交易所 API 配置 ============
+model ApiConfig {
+  id          String     @id @default(uuid())
+  exchange    String     @default("BINANCE")
+  environment String     @default("TESTNET")
+  apiKey      String
+  apiSecret   String
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  strategies  Strategy[]
+
+  @@unique([exchange, environment])
+  @@map("api_configs")
+}
+
+// ============ 交易策略 ============
+model Strategy {
+  id             String     @id @default(uuid())
+  name           String
+  symbol         String
+  cycleInterval  String     @default("5m")
+  quantity       Float
+  quantityType   String     @default("BY_QUANTITY")
+  leverage       Int        @default(10)
+  takeProfitPct  Float      @default(1.5)
+  stopLossPct    Float      @default(1.0)
+  maxPositions   Int        @default(5)
+  marginMode     String     @default("ISOLATED")
+  apiConfigId    String?
+  status         String     @default("IDLE")
+  isActive       Boolean    @default(false)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  apiConfig  ApiConfig?  @relation(fields: [apiConfigId], references: [id], onDelete: SetNull)
+  positions  Position[]
+
+  @@index([symbol, isActive])
+  @@map("strategies")
+}
+
+// ============ 持仓 ============
+model Position {
+  id              String      @id @default(uuid())
+  strategyId      String
+  cycleId         String
+  side            String
+  entryPrice      Float
+  quantity        Float
+  takeProfitPrice Float?
+  stopLossPrice   Float?
+  status          String      @default("OPEN")
+  realizedPnl     Float?
+  cycleOpenTime   DateTime
+  closedAt        DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  strategy  Strategy   @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  orders    Order[]
+  logs      TradeLog[]
+
+  @@index([strategyId, status])
+  @@index([cycleId])
+  @@map("positions")
+}
+
+// ============ 订单 ============
+model Order {
+  id                String    @id @default(uuid())
+  positionId        String
+  side              String
+  type              String
+  status            String    @default("PENDING")
+  price             Float?
+  stopPrice         Float?
+  quantity          Float
+  filledQty         Float?
+  exchangeOrderId   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  position  Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+
+  @@index([positionId])
+  @@map("orders")
+}
+
+// ============ 系统配置（key-value） ============
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// ============ 交易日志 ============
+model TradeLog {
+  id         String    @id @default(uuid())
+  positionId String?
+  action     String
+  detail     Json?
+  createdAt  DateTime  @default(now())
+
+  position  Position? @relation(fields: [positionId], references: [id], onDelete: SetNull)
+
+  @@index([positionId])
+  @@map("trade_logs")
+}
+
+// ============ 回测任务 ============
+// 与实盘/模拟盘下单路径严格隔离，仅存储回测配置与结果
+model BacktestJob {
+  id        String   @id @default(uuid())
+  /// SINGLE=单次回测 GRID=参数网格搜索
+  type      String
+  /// PENDING | RUNNING | COMPLETED | FAILED
+  status    String   @default("PENDING")
+  symbol    String
+  startTime DateTime
+  endTime   DateTime
+  /// 完整请求配置（策略参数、费率、滑点、网格、样本切分等）
+  config    Json
+  /// 失败原因
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  results BacktestResult[]
+
+  @@index([status, createdAt])
+  @@map("backtest_jobs")
+}
+
+// ============ 回测结果 ============
+model BacktestResult {
+  id String @id @default(uuid())
+  jobId String
+  /// FULL | IN_SAMPLE | OUT_OF_SAMPLE
+  sampleType String
+  /// 本条结果使用的策略参数
+  params Json
+  /// 统计指标（扣费+滑点后）
+  stats Json
+  /// 成交明细（单次回测 / 样本外复跑时保存；网格中间结果可省略）
+  trades Json?
+  /// 净值曲线采样（含盯市）；仅 Top / 单次结果保存
+  curve Json?
+  /// 网格排序名次（1 起）；非网格为 null
+  rank Int?
+  /// 是否进入 Top N
+  isTop Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  job BacktestJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, sampleType])
+  @@map("backtest_results")
+}

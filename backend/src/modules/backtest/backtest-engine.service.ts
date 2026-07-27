@@ -4,6 +4,7 @@
  * 严禁调用真实下单接口 —— 仅基于历史 K 线内存模拟
  *
  * 净值曲线：equity = initialBalance - cumulativeFees + realizedGross + unrealizedMtm
+ * 开仓门禁：available = equity - usedMargin；须覆盖本周期 requiredMargin
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -20,6 +21,11 @@ import type {
   BacktestTradeDetail,
   EquityCurvePoint,
 } from './backtest.types';
+
+/** 保证金缓冲系数（与实盘 RiskService 一致） */
+const MARGIN_BUFFER = 1.2;
+/** 每周期开多+空 */
+const HEDGE_LEGS = 2;
 
 interface OpenSimPosition {
   cycleId: string;
@@ -62,7 +68,7 @@ export class BacktestEngineService {
       const bar = klines[i];
       const tradesBefore = trades.length;
 
-      // 1) 先检查已有仓位是否在本根 K 线触发 TP/SL
+      // 1) 先检查已有仓位是否在本根 K 线触发 TP/SL（不含本根新开仓）
       this.checkExits(openPositions, bar, fee, slippage, trades);
 
       // 平仓：累加已实现盈亏与平仓手续费（开仓费已在开仓时计入）
@@ -73,33 +79,65 @@ export class BacktestEngineService {
         cumulativeFees += t.closeFee;
       }
 
-      // 2) 本根 K 线作为新周期：若未达 maxPositions，双边开仓
+      // 2) 本根 K 线作为新周期：若未达 maxPositions 且保证金充足，双边开仓
       if (openPositions.length + 2 <= params.maxPositions) {
         const qty = this.calcQuantity(params.quantity, params.quantityType, bar.open);
         if (qty > 0) {
-          const cycleId = `${params.cycleInterval}:${new Date(bar.timestamp).toISOString().slice(0, 16)}`;
-          const longPos = this.openOne(
-            'LONG',
-            cycleId,
-            bar.timestamp,
-            bar.open,
+          const leverage = params.leverage > 0 ? params.leverage : 1;
+          const sideNotional = this.calcSideNotional(
+            params.quantity,
+            params.quantityType,
             qty,
-            params,
-            fee,
-            slippage,
-          );
-          const shortPos = this.openOne(
-            'SHORT',
-            cycleId,
-            bar.timestamp,
             bar.open,
-            qty,
-            params,
-            fee,
-            slippage,
           );
-          openPositions.push(longPos, shortPos);
-          cumulativeFees += longPos.openFee + shortPos.openFee;
+          const requiredMargin =
+            ((sideNotional * HEDGE_LEGS) / leverage) * MARGIN_BUFFER;
+          const unrealized = this.calcUnrealized(openPositions, bar.open);
+          const equity =
+            initialBalance - cumulativeFees + realizedGross + unrealized;
+          const usedMargin = this.calcUsedMargin(openPositions, leverage);
+          const available = equity - usedMargin;
+
+          if (available < requiredMargin) {
+            this.logger.debug(
+              `Skip open: available=${available.toFixed(4)} < required=${requiredMargin.toFixed(4)} ` +
+                `(equity=${equity.toFixed(4)}, usedMargin=${usedMargin.toFixed(4)})`,
+            );
+          } else {
+            const cycleId = `${params.cycleInterval}:${new Date(bar.timestamp).toISOString().slice(0, 16)}`;
+            const longPos = this.openOne(
+              'LONG',
+              cycleId,
+              bar.timestamp,
+              bar.open,
+              qty,
+              params,
+              fee,
+              slippage,
+            );
+            const shortPos = this.openOne(
+              'SHORT',
+              cycleId,
+              bar.timestamp,
+              bar.open,
+              qty,
+              params,
+              fee,
+              slippage,
+            );
+            openPositions.push(longPos, shortPos);
+            cumulativeFees += longPos.openFee + shortPos.openFee;
+
+            // 开仓当根也可能触及 TP/SL（按 open 开仓后，用本根 high/low 判定）
+            const tradesAfterOpen = trades.length;
+            this.checkExits(openPositions, bar, fee, slippage, trades);
+            for (let j = tradesAfterOpen; j < trades.length; j++) {
+              const t = trades[j];
+              realizedGross += t.grossPnl;
+              realizedNet += t.netPnl;
+              cumulativeFees += t.closeFee;
+            }
+          }
         }
       }
 
@@ -158,13 +196,7 @@ export class BacktestEngineService {
     openPositions: OpenSimPosition[],
     markPrice: number,
   ): EquityCurvePoint {
-    let unrealized = 0;
-    for (const pos of openPositions) {
-      unrealized +=
-        pos.side === 'LONG'
-          ? (markPrice - pos.openFillPrice) * pos.quantity
-          : (pos.openFillPrice - markPrice) * pos.quantity;
-    }
+    const unrealized = this.calcUnrealized(openPositions, markPrice);
     const equity = initialBalance - cumulativeFees + realizedGross + unrealized;
     return {
       t,
@@ -174,6 +206,43 @@ export class BacktestEngineService {
       unrealized: this.round(unrealized),
       openCount: openPositions.length,
     };
+  }
+
+  private calcUnrealized(
+    openPositions: OpenSimPosition[],
+    markPrice: number,
+  ): number {
+    let unrealized = 0;
+    for (const pos of openPositions) {
+      unrealized +=
+        pos.side === 'LONG'
+          ? (markPrice - pos.openFillPrice) * pos.quantity
+          : (pos.openFillPrice - markPrice) * pos.quantity;
+    }
+    return unrealized;
+  }
+
+  /** 单边名义本金 */
+  private calcSideNotional(
+    quantity: number,
+    quantityType: 'BY_QUANTITY' | 'BY_NOTIONAL',
+    qty: number,
+    price: number,
+  ): number {
+    if (quantityType === 'BY_NOTIONAL') return quantity;
+    return qty * price;
+  }
+
+  /** 已占用保证金 = Σ(持仓名义 / leverage)，不含 buffer */
+  private calcUsedMargin(
+    openPositions: OpenSimPosition[],
+    leverage: number,
+  ): number {
+    let used = 0;
+    for (const pos of openPositions) {
+      used += (pos.quantity * pos.openFillPrice) / leverage;
+    }
+    return used;
   }
 
   /**
@@ -234,7 +303,7 @@ export class BacktestEngineService {
   }
 
   /**
-   * 检查本根 K 线是否触及 TP/SL
+   * 检查本根 K 线是否触及 TP/SL（含开仓当根：按 open 入场后用 high/low 判定）
    * 同根同时触及时取保守假设：优先止损（避免收益虚高）
    */
   private checkExits(
@@ -246,7 +315,8 @@ export class BacktestEngineService {
   ): void {
     for (let i = openPositions.length - 1; i >= 0; i--) {
       const pos = openPositions[i];
-      if (bar.timestamp <= pos.openTime) continue;
+      // 仅跳过未来仓位；开仓当根（timestamp === openTime）允许判定
+      if (bar.timestamp < pos.openTime) continue;
 
       let exitReason: 'TP' | 'SL' | null = null;
       let triggerPrice = 0;

@@ -49,6 +49,8 @@ model Strategy {
   stopLossPct    Float      @default(1.0)
   maxPositions   Int        @default(5)
   marginMode     String     @default("ISOLATED")
+  /// 本地价格触及 TP/SL 时是否主动市价平仓（交易所条件单始终挂）
+  localAutoCloseEnabled Boolean @default(false)
   apiConfigId    String?
   status         String     @default("IDLE")
   isActive       Boolean    @default(false)

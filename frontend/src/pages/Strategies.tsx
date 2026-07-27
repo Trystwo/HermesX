@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Slider } from '@/components/ui/Slider'
+import { Switch } from '@/components/ui/Switch'
 import { Modal, ConfirmModal } from '@/components/ui/Modal'
 import { Tabs } from '@/components/ui/Tabs'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -227,6 +228,7 @@ function StrategyFormModal({ open, onClose, strategy, apiConfigOptions }: Strate
     stopLossPct: strategy?.stopLossPct ?? 1,
     maxPositions: strategy?.maxPositions ?? 10,
     marginMode: strategy?.marginMode ?? 'ISOLATED',
+    localAutoCloseEnabled: strategy?.localAutoCloseEnabled ?? false,
     apiConfigId: strategy?.apiConfigId ?? null,
   })
 
@@ -380,6 +382,19 @@ function StrategyFormModal({ open, onClose, strategy, apiConfigOptions }: Strate
             value={form.stopLossPct}
             onChange={(e) => setForm({ ...form, stopLossPct: Number(e.target.value) })}
             prefix="↓"
+          />
+        </div>
+
+        <div className="flex items-center justify-between gap-4 p-3 bg-bg-elevated rounded-md">
+          <div className="min-w-0">
+            <div className="text-sm text-fg">本地主动平仓</div>
+            <p className="text-xs text-fg-muted mt-0.5">
+              开启后，本地监控价格触及 TP/SL 时主动市价平仓作为保底；关闭则仅依赖交易所条件单。
+            </p>
+          </div>
+          <Switch
+            checked={form.localAutoCloseEnabled}
+            onChange={(checked) => setForm({ ...form, localAutoCloseEnabled: checked })}
           />
         </div>
 

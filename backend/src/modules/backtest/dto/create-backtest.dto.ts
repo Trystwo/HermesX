@@ -100,7 +100,7 @@ class StrategyParamsDto {
   @Type(() => Number)
   @IsInt()
   @Min(2)
-  @Max(100)
+  @Max(10000)
   maxPositions?: number = 10;
 }
 

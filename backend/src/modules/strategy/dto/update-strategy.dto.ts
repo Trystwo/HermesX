@@ -65,6 +65,10 @@ export class UpdateStrategyDto {
   marginMode?: string;
 
   @IsOptional()
+  @IsBoolean()
+  localAutoCloseEnabled?: boolean;
+
+  @IsOptional()
   @IsString()
   apiConfigId?: string;
 

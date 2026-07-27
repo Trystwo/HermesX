@@ -24,6 +24,21 @@ export class PositionController {
     return this.positionService.findAll({ strategyId, status, cycleId });
   }
 
+  @Post('close-all')
+  closeAll(@Body('strategyId') strategyId?: string) {
+    return this.positionService.closeAll(strategyId);
+  }
+
+  @Post('place-tpsl-missing')
+  placeTpSlMissing(@Body('strategyId') strategyId?: string) {
+    return this.positionService.placeTpSlMissing(strategyId);
+  }
+
+  @Post('reconcile/:strategyId')
+  reconcile(@Param('strategyId') strategyId: string) {
+    return this.positionService.reconcile(strategyId);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.positionService.findOne(id);
@@ -34,13 +49,8 @@ export class PositionController {
     return this.positionService.closePosition(id);
   }
 
-  @Post('close-all')
-  closeAll(@Body('strategyId') strategyId?: string) {
-    return this.positionService.closeAll(strategyId);
-  }
-
-  @Post('reconcile/:strategyId')
-  reconcile(@Param('strategyId') strategyId: string) {
-    return this.positionService.reconcile(strategyId);
+  @Post(':id/place-tpsl')
+  placeTpSl(@Param('id') id: string) {
+    return this.positionService.placeTpSl(id);
   }
 }

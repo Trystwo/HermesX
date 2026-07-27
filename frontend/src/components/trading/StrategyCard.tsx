@@ -83,6 +83,12 @@ export function StrategyCard({
         </div>
       </div>
 
+      {strategy.localAutoCloseEnabled && (
+        <div className="text-xs text-fg-muted bg-bg-elevated rounded px-2 py-1.5">
+          本地主动平仓已开启
+        </div>
+      )}
+
       {highLeverage && (
         <div className="text-xs text-warn bg-warn/10 border border-warn/30 rounded px-2 py-1.5">
           杠杆超过 50 倍，存在较高爆仓风险

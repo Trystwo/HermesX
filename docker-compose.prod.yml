@@ -1,6 +1,4 @@
 # HermesX 生产环境 Docker Compose
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -14,6 +12,11 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-hermesx} -d ${DB_NAME:-hermesx}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - hermesx-net
 
@@ -25,6 +28,11 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
       - hermesx-net
 
@@ -33,10 +41,13 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: hermesx-backend
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${DB_USER:-hermesx}:${DB_PASSWORD:-hermesx_dev_2026}@postgres:5432/${DB_NAME:-hermesx}?schema=public
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      PORT: 3001
       JWT_SECRET: ${JWT_SECRET:-hermesx_jwt_secret_change_in_production}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-hermesx_encryption_key_32bytes_change_me!!}
       BINANCE_API_KEY: ${BINANCE_API_KEY:-}
@@ -45,8 +56,12 @@ services:
       BINANCE_TESTNET_API_SECRET: ${BINANCE_TESTNET_API_SECRET:-}
       DEFAULT_ENVIRONMENT: ${DEFAULT_ENVIRONMENT:-TESTNET}
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
     restart: unless-stopped
     networks:
       - hermesx-net
@@ -58,6 +73,7 @@ services:
     container_name: hermesx-frontend
     ports:
       - "80:80"
+      - "5173:80"
     depends_on:
       - backend
     restart: unless-stopped

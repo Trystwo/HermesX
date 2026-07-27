@@ -130,6 +130,35 @@ export class OrderService {
   }
 
   /**
+   * 补挂 / 重挂止盈止损：先取消该仓位残留 PENDING 条件单，再按策略参数重新挂单。
+   * 用于开仓后 placeTpSl 失败留下的裸仓，或条件单丢失后的人工修复。
+   */
+  async replenishTpSl(positionId: string): Promise<Position> {
+    const position = await this.prisma.position.findUnique({
+      where: { id: positionId },
+    });
+    if (!position) {
+      throw new NotFoundException(`Position ${positionId} not found`);
+    }
+    if (position.status !== PositionStatus.OPEN) {
+      throw new BadRequestException(
+        `Position ${positionId} is ${position.status}, only OPEN positions can replenish TP/SL`,
+      );
+    }
+
+    await this.cancelPendingOrders(positionId);
+    await this.placeTpSl(position);
+
+    const updated = await this.prisma.position.findUnique({
+      where: { id: positionId },
+    });
+    if (!updated) {
+      throw new NotFoundException(`Position ${positionId} not found after TP/SL`);
+    }
+    return updated;
+  }
+
+  /**
    * 挂止盈止损条件单
    * 关键: 精确 quantity=Q + positionSide（Hedge Mode）
    *
@@ -475,6 +504,111 @@ export class OrderService {
   }
 
   /**
+   * 交易所 TP/SL 条件单已成交后，同步本地仓位并取消对侧残留挂单。
+   * Binance 条件单非 OCO：一侧成交后另一侧不会自动撤销。
+   */
+  async syncClosedByConditionalFill(
+    positionId: string,
+    triggerType: 'TP' | 'SL',
+    opts?: {
+      filledOrderId?: string;
+      fillPrice?: number;
+      filledQty?: number;
+    },
+  ): Promise<Position | null> {
+    const position = await this.prisma.position.findUnique({
+      where: { id: positionId },
+      include: { strategy: true },
+    });
+    if (!position || position.status !== PositionStatus.OPEN) {
+      return null;
+    }
+
+    const closePrice =
+      opts?.fillPrice ??
+      (await this.marketService
+        .getPrice(position.strategy.symbol)
+        .catch(() => position.entryPrice));
+    const realizedPnl = this.calculatePnl(
+      position.side,
+      position.entryPrice,
+      closePrice,
+      position.quantity,
+    );
+    const status =
+      triggerType === 'TP' ? PositionStatus.TP_HIT : PositionStatus.SL_HIT;
+
+    // 先标记已成交的条件单，避免随后 cancel 时被误标为 CANCELED
+    if (opts?.filledOrderId) {
+      await this.prisma.order.update({
+        where: { id: opts.filledOrderId },
+        data: {
+          status: OrderStatus.FILLED,
+          filledQty: opts.filledQty ?? position.quantity,
+          price: closePrice,
+        },
+      });
+    } else {
+      const filledType =
+        triggerType === 'TP'
+          ? OrderType.TAKE_PROFIT_MARKET
+          : OrderType.STOP_MARKET;
+      const pendingFill = await this.prisma.order.findFirst({
+        where: {
+          positionId,
+          type: filledType,
+          status: OrderStatus.PENDING,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (pendingFill) {
+        await this.prisma.order.update({
+          where: { id: pendingFill.id },
+          data: {
+            status: OrderStatus.FILLED,
+            filledQty: opts?.filledQty ?? position.quantity,
+            price: closePrice,
+          },
+        });
+      }
+    }
+
+    const updated = await this.prisma.position.update({
+      where: { id: positionId },
+      data: {
+        status,
+        realizedPnl,
+        closedAt: new Date(),
+      },
+      include: { strategy: true },
+    });
+
+    // 取消对侧残留挂单（另一侧 STOP / TAKE_PROFIT）
+    await this.cancelPendingOrders(positionId);
+
+    await this.prisma.tradeLog.create({
+      data: {
+        positionId,
+        action: `${triggerType}_SYNCED`,
+        detail: {
+          triggerType,
+          closePrice,
+          realizedPnl,
+          filledOrderId: opts?.filledOrderId,
+          syncedAt: new Date().toISOString(),
+          note: '交易所条件单已成交，本地已同步并取消残留挂单',
+        },
+      },
+    });
+
+    this.logger.log(
+      `Position ${positionId} synced to ${status} after exchange ${triggerType} fill, pnl=${realizedPnl}`,
+    );
+
+    return updated;
+  }
+
+  /**
    * 取消仓位的所有挂单(TP/SL)
    */
   async cancelPendingOrders(positionId: string): Promise<void> {
@@ -492,7 +626,8 @@ export class OrderService {
     for (const order of orders) {
       if (order.exchangeOrderId) {
         try {
-          await exchange.cancelOrder(
+          await this.exchangeService.cancelOrder(
+            exchange,
             order.exchangeOrderId,
             order.position.strategy.symbol,
           );

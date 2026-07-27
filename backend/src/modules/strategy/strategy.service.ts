@@ -66,6 +66,7 @@ export class StrategyService {
         stopLossPct: dto.stopLossPct ?? 1.0,
         maxPositions: dto.maxPositions ?? 5,
         marginMode: dto.marginMode ?? 'ISOLATED',
+        localAutoCloseEnabled: dto.localAutoCloseEnabled ?? false,
         apiConfigId: dto.apiConfigId,
         isActive: dto.isActive ?? false,
         status: StrategyStatus.IDLE,

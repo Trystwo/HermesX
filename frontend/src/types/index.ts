@@ -43,6 +43,8 @@ export interface Strategy {
   stopLossPct: number
   maxPositions: number
   marginMode: 'CROSSED' | 'ISOLATED'
+  /** 本地价格触及 TP/SL 时是否主动市价平仓 */
+  localAutoCloseEnabled: boolean
   apiConfigId: string | number | null
   status: StrategyStatus
   isActive?: boolean
@@ -62,6 +64,7 @@ export interface CreateStrategyInput {
   stopLossPct: number
   maxPositions: number
   marginMode: 'CROSSED' | 'ISOLATED'
+  localAutoCloseEnabled: boolean
   apiConfigId: string | number | null
 }
 
@@ -69,26 +72,35 @@ export type UpdateStrategyInput = Partial<CreateStrategyInput>
 
 // ============ 持仓 ============
 export interface Position {
-  id: number
+  id: string
   cycleId: string
-  strategyId: number
+  strategyId: string
   strategyName?: string
   symbol: string
   side: Side
   quantity: number
   entryPrice: number
-  currentPrice: number
-  markPrice: number
-  takeProfitPrice: number
-  stopLossPrice: number
-  unrealizedPnl: number
+  currentPrice?: number
+  markPrice?: number
+  takeProfitPrice: number | null
+  stopLossPrice: number | null
+  unrealizedPnl?: number
   realizedPnl: number | null
-  margin: number
-  leverage: number
+  margin?: number
+  leverage?: number
   status: PositionStatus
   environment: Environment
+  /** 开仓时间（cycleOpenTime / createdAt） */
   openedAt: string
+  /** 最近一次 TP 条件单创建时间 */
+  tpPlacedAt?: string | null
+  /** 最近一次 SL 条件单创建时间 */
+  slPlacedAt?: string | null
   closedAt: string | null
+  hasPendingTp?: boolean
+  hasPendingSl?: boolean
+  /** OPEN 且缺少 PENDING TP 或 SL */
+  needsTpSl?: boolean
 }
 
 // ============ 订单 ============

@@ -36,10 +36,12 @@
     "dotenv": "^16.4.5",
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
+    "media-typer": "^2.0.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "safer-buffer": "^2.1.2",
     "socket.io": "^4.7.5",
     "uuid": "^10.0.0"
   },

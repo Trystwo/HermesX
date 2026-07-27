@@ -5,17 +5,47 @@ import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import type { Position } from '@/types'
 import { SIDE_LABEL, POSITION_STATUS_LABEL, POSITION_STATUS_VARIANT } from '@/utils/constants'
-import { formatPrice, formatSignedPnl, pnlColor, formatTimeShort } from '@/utils/format'
+import {
+  formatPrice,
+  formatSignedPnl,
+  pnlColor,
+  formatPositionTime,
+} from '@/utils/format'
 import { Inbox } from 'lucide-react'
 
 export interface PositionTableProps {
   positions: Position[]
-  onClose?: (id: number) => void
+  onClose?: (id: string) => void
+  onPlaceTpSl?: (id: string) => void
+  placingTpSlId?: string | null
   loading?: boolean
   compact?: boolean
 }
 
-export function PositionTable({ positions, onClose, loading, compact }: PositionTableProps) {
+function TimeCell({ value, label }: { value?: string | null; label?: string }) {
+  if (!value) {
+    return (
+      <span className="text-fg-muted">
+        {label ? `${label} --` : '--'}
+      </span>
+    )
+  }
+  return (
+    <span className="font-mono">
+      {label ? `${label} ` : ''}
+      {formatPositionTime(value)}
+    </span>
+  )
+}
+
+export function PositionTable({
+  positions,
+  onClose,
+  onPlaceTpSl,
+  placingTpSlId,
+  loading,
+  compact,
+}: PositionTableProps) {
   // 同周期多空成对高亮
   const cyclePairMap = useMemo(() => {
     const map = new Map<string, number>()
@@ -26,6 +56,9 @@ export function PositionTable({ positions, onClose, loading, compact }: Position
     })
     return map
   }, [positions])
+
+  const showActions = Boolean(onClose || onPlaceTpSl)
+  const colSpan = compact ? (showActions ? 8 : 7) : showActions ? 12 : 11
 
   if (!loading && positions.length === 0) {
     return (
@@ -50,14 +83,14 @@ export function PositionTable({ positions, onClose, loading, compact }: Position
           {!compact && <TableHead>止损</TableHead>}
           <TableHead>数量</TableHead>
           <TableHead>未实现盈亏</TableHead>
-          {!compact && <TableHead>开仓时间</TableHead>}
+          {!compact && <TableHead>时间</TableHead>}
           <TableHead>状态</TableHead>
-          {onClose && <TableHead className="text-right">操作</TableHead>}
+          {showActions && <TableHead className="text-right">操作</TableHead>}
         </TableRow>
       </TableHeader>
       <TableBody>
         {loading && positions.length === 0 ? (
-          <EmptyRow colSpan={onClose ? 11 : 10}>加载中...</EmptyRow>
+          <EmptyRow colSpan={colSpan}>加载中...</EmptyRow>
         ) : (
           positions.map((p) => {
             const isPaired = (cyclePairMap.get(p.cycleId) ?? 0) >= 2
@@ -87,25 +120,49 @@ export function PositionTable({ positions, onClose, loading, compact }: Position
                   {formatSignedPnl(p.unrealizedPnl)}
                 </TableCell>
                 {!compact && (
-                  <TableCell className="text-xs text-fg-muted">
-                    {formatTimeShort(p.openedAt)}
+                  <TableCell className="text-xs text-fg-muted leading-5 whitespace-nowrap">
+                    <div><TimeCell label="开仓" value={p.openedAt} /></div>
+                    <div><TimeCell label="TP" value={p.tpPlacedAt} /></div>
+                    <div><TimeCell label="SL" value={p.slPlacedAt} /></div>
+                    {(p.closedAt || p.status !== 'OPEN') && (
+                      <div><TimeCell label="平仓" value={p.closedAt} /></div>
+                    )}
                   </TableCell>
                 )}
                 <TableCell>
-                  <Badge variant={POSITION_STATUS_VARIANT[p.status]}>
-                    {POSITION_STATUS_LABEL[p.status]}
-                  </Badge>
+                  <div className="flex flex-col items-start gap-1">
+                    <Badge variant={POSITION_STATUS_VARIANT[p.status]}>
+                      {POSITION_STATUS_LABEL[p.status]}
+                    </Badge>
+                    {p.needsTpSl && (
+                      <Badge variant="warn">缺TP/SL</Badge>
+                    )}
+                  </div>
                 </TableCell>
-                {onClose && (
+                {showActions && (
                   <TableCell className="text-right">
                     {p.status === 'OPEN' && (
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onClick={() => onClose(p.id)}
-                      >
-                        平仓
-                      </Button>
+                      <div className="inline-flex items-center justify-end gap-1.5">
+                        {onPlaceTpSl && p.needsTpSl && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            loading={placingTpSlId === p.id}
+                            onClick={() => onPlaceTpSl(p.id)}
+                          >
+                            补挂
+                          </Button>
+                        )}
+                        {onClose && (
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => onClose(p.id)}
+                          >
+                            平仓
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </TableCell>
                 )}

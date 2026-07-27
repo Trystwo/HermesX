@@ -68,6 +68,10 @@ export class CreateStrategyDto {
   marginMode?: string = MarginMode.ISOLATED;
 
   @IsOptional()
+  @IsBoolean()
+  localAutoCloseEnabled?: boolean = false;
+
+  @IsOptional()
   @IsString()
   apiConfigId?: string;
 

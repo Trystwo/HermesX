@@ -49,6 +49,18 @@ function nowIso(): string {
   return d.toISOString().slice(0, 16)
 }
 
+/** API ISO → datetime-local 值（UTC，YYYY-MM-DDTHH:mm） */
+function toDatetimeLocalUtc(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 16)
+  return d.toISOString().slice(0, 16)
+}
+
+function numListToCsv(nums: number[] | undefined): string {
+  if (!nums?.length) return ''
+  return nums.join(',')
+}
+
 function parseNumList(raw: string): number[] {
   return raw
     .split(/[,，\s]+/)
@@ -161,6 +173,67 @@ export function Backtest() {
     },
     onError: (e) => toast.error((e as Error).message),
   })
+
+  /** 用任务 config 回填「新建回测」表单 */
+  const applyJobToForm = (job: BacktestJob) => {
+    const cfg = job.config
+    const params =
+      cfg?.params ||
+      job.results?.find((r) => r.params)?.params ||
+      undefined
+
+    setJobType(job.type)
+    setSymbol(job.symbol || cfg?.symbol || 'BTCUSDT')
+    setStartTime(toDatetimeLocalUtc(job.startTime || cfg?.startTime || ''))
+    setEndTime(toDatetimeLocalUtc(job.endTime || cfg?.endTime || ''))
+
+    if (params) {
+      if (params.cycleInterval) setCycleInterval(params.cycleInterval)
+      if (params.quantity != null) setQuantity(String(params.quantity))
+      if (params.quantityType) setQuantityType(params.quantityType)
+      if (params.leverage != null) setLeverage(String(params.leverage))
+      if (params.takeProfitPct != null) setTakeProfitPct(String(params.takeProfitPct))
+      if (params.stopLossPct != null) setStopLossPct(String(params.stopLossPct))
+      setMaxPositions(String(params.maxPositions ?? 10))
+    }
+
+    const balance = cfg?.initialBalance
+    if (balance != null && !Number.isNaN(Number(balance))) {
+      setInitialBalance(String(balance))
+    }
+
+    if (cfg?.fee) {
+      if (cfg.fee.enabled != null) setFeeEnabled(cfg.fee.enabled)
+      if (cfg.fee.openFeeRate != null) setOpenFeeRate(String(cfg.fee.openFeeRate))
+      if (cfg.fee.closeFeeRate != null) setCloseFeeRate(String(cfg.fee.closeFeeRate))
+    }
+
+    if (cfg?.slippage) {
+      if (cfg.slippage.enabled != null) setSlipEnabled(cfg.slippage.enabled)
+      if (cfg.slippage.pct != null) setSlipPct(String(cfg.slippage.pct))
+    }
+
+    if (cfg?.sampleSplit) {
+      setOosEnabled(!!cfg.sampleSplit.enabled)
+      if (cfg.sampleSplit.inSampleRatio != null) {
+        setOosRatio(String(cfg.sampleSplit.inSampleRatio))
+      }
+    }
+
+    if (job.type === 'GRID' && cfg?.grid) {
+      if (cfg.grid.takeProfitPct?.length) setGridTp(numListToCsv(cfg.grid.takeProfitPct))
+      if (cfg.grid.stopLossPct?.length) setGridSl(numListToCsv(cfg.grid.stopLossPct))
+      setGridLev(numListToCsv(cfg.grid.leverage))
+      setGridQty(numListToCsv(cfg.grid.quantity))
+    }
+    if (cfg?.sortBy) setSortBy(cfg.sortBy)
+    if (cfg?.topN != null) setTopN(String(cfg.topN))
+  }
+
+  const handleSelectJob = (job: BacktestJob) => {
+    applyJobToForm(job)
+    setSelectedId(job.id)
+  }
 
   const buildInput = (): CreateBacktestInput => {
     const input: CreateBacktestInput = {
@@ -479,7 +552,7 @@ export function Backtest() {
                 <button
                   key={job.id}
                   type="button"
-                  onClick={() => setSelectedId(job.id)}
+                  onClick={() => handleSelectJob(job)}
                   className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                     selectedId === job.id
                       ? 'bg-brand/10 text-brand'

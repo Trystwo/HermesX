@@ -25,6 +25,24 @@ export interface OrderResult {
   raw?: any;
 }
 
+export interface OpenOrderInfo {
+  id: string;
+  symbol: string;
+  type: string;
+  side: string;
+  status: string;
+  price?: number;
+  stopPrice?: number;
+  amount: number;
+  filled: number;
+  /** 挂单时间（交易所）ms */
+  timestamp: number;
+  datetime?: string;
+  positionSide?: string;
+  reduceOnly?: boolean;
+  raw?: any;
+}
+
 export interface PositionInfo {
   symbol: string;
   side: 'LONG' | 'SHORT';
@@ -249,6 +267,153 @@ export class ExchangeService implements OnModuleDestroy {
       avgPrice: result.average,
       raw: result,
     };
+  }
+
+  /**
+   * 查询单个订单状态（用于同步 TP/SL 条件单是否已成交）
+   */
+  async fetchOrder(
+    exchange: Exchange,
+    orderId: string,
+    symbol: string,
+  ): Promise<OrderResult> {
+    const result = await exchange.fetchOrder(orderId, symbol);
+    return {
+      id: result.id ?? orderId,
+      status: result.status || 'unknown',
+      filledQty: result.filled || 0,
+      avgPrice: result.average ?? result.price ?? undefined,
+      raw: result,
+    };
+  }
+
+  /**
+   * 查询当前未成交挂单。
+   * Binance U本位条件单已迁到 Algo API：普通 openOrders 不含 TP/SL，
+   * 需同时拉 fapi openAlgoOrders（含 createTime 挂单时间）。
+   */
+  async fetchOpenOrders(
+    exchange: Exchange,
+    symbol?: string,
+  ): Promise<OpenOrderInfo[]> {
+    const regular = symbol
+      ? await exchange.fetchOpenOrders(symbol)
+      : await exchange.fetchOpenOrders();
+
+    const fromRegular: OpenOrderInfo[] = (regular || []).map((o: any) => ({
+      id: String(o.id ?? ''),
+      symbol: o.symbol ?? symbol ?? '',
+      type: String(o.type ?? o.info?.type ?? '').toLowerCase(),
+      side: String(o.side ?? '').toLowerCase(),
+      status: String(o.status ?? 'open').toLowerCase(),
+      price: o.price != null ? Number(o.price) : undefined,
+      stopPrice:
+        o.stopPrice != null
+          ? Number(o.stopPrice)
+          : o.info?.stopPrice != null
+            ? Number(o.info.stopPrice)
+            : undefined,
+      amount: Number(o.amount ?? 0),
+      filled: Number(o.filled ?? 0),
+      timestamp: Number(o.timestamp ?? o.info?.time ?? o.info?.updateTime ?? 0),
+      datetime:
+        o.datetime ??
+        (o.timestamp ? new Date(o.timestamp).toISOString() : undefined),
+      positionSide: o.info?.positionSide ?? o.positionSide,
+      reduceOnly: o.reduceOnly ?? o.info?.reduceOnly,
+      raw: o,
+    }));
+
+    const fromAlgo = await this.fetchOpenAlgoOrders(exchange, symbol);
+    const seen = new Set(fromRegular.map((o) => o.id));
+    const merged = [...fromRegular];
+    for (const o of fromAlgo) {
+      if (o.id && !seen.has(o.id)) {
+        merged.push(o);
+        seen.add(o.id);
+      }
+    }
+    return merged;
+  }
+
+  /**
+   * Binance 条件单（STOP_MARKET / TAKE_PROFIT_MARKET）开放挂单
+   * GET /fapi/v1/openAlgoOrders — 返回 algoId + createTime
+   */
+  async fetchOpenAlgoOrders(
+    exchange: Exchange,
+    symbol?: string,
+  ): Promise<OpenOrderInfo[]> {
+    try {
+      const params: Record<string, string> = {};
+      if (symbol) {
+        params.symbol = symbol.includes('/')
+          ? symbol.split(':')[0].replace('/', '')
+          : symbol.replace(/[:/]/g, '').replace(/USDTUSDT$/, 'USDT');
+      }
+      const raw = await (exchange as any).fapiPrivateGetOpenAlgoOrders(params);
+      const list: any[] = Array.isArray(raw) ? raw : raw?.orders ?? [];
+      return list.map((o) => {
+        const createTime = Number(o.createTime ?? o.bookTime ?? o.updateTime ?? 0);
+        return {
+          id: String(o.algoId ?? o.orderId ?? ''),
+          symbol: o.symbol ?? symbol ?? '',
+          type: String(o.orderType ?? o.type ?? '').toLowerCase(),
+          side: String(o.side ?? '').toLowerCase(),
+          status: String(o.algoStatus ?? o.status ?? 'NEW').toLowerCase(),
+          price: o.price != null ? Number(o.price) : undefined,
+          stopPrice:
+            o.triggerPrice != null
+              ? Number(o.triggerPrice)
+              : o.stopPrice != null
+                ? Number(o.stopPrice)
+                : undefined,
+          amount: Number(o.quantity ?? o.totalQty ?? 0),
+          filled: Number(o.actualQty ?? o.executedQty ?? 0),
+          timestamp: createTime,
+          datetime: createTime ? new Date(createTime).toISOString() : undefined,
+          positionSide: o.positionSide,
+          reduceOnly: o.reduceOnly,
+          raw: o,
+        } satisfies OpenOrderInfo;
+      });
+    } catch (e) {
+      this.logger.warn(
+        `fetchOpenAlgoOrders failed: ${(e as Error).message}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * 取消订单：普通单走 cancelOrder；条件单（algoId）走 deleteAlgoOrder
+   */
+  async cancelOrder(
+    exchange: Exchange,
+    orderId: string,
+    symbol: string,
+  ): Promise<void> {
+    try {
+      await exchange.cancelOrder(orderId, symbol);
+      return;
+    } catch (e) {
+      const msg = (e as Error).message || '';
+      if (
+        msg.includes('-2011') ||
+        msg.includes('-2013') ||
+        msg.toLowerCase().includes('unknown order') ||
+        msg.toLowerCase().includes('does not exist')
+      ) {
+        await (exchange as any).fapiPrivateDeleteAlgoOrder({ algoId: orderId });
+        return;
+      }
+      try {
+        await (exchange as any).fapiPrivateDeleteAlgoOrder({ algoId: orderId });
+        return;
+      } catch {
+        throw e;
+      }
+    }
   }
 
   async closePosition(

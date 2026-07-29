@@ -8,12 +8,16 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { PositionService } from './position.service';
+import { TpslMonitorService } from '../trading/tpsl-monitor.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('positions')
 @UseGuards(JwtAuthGuard)
 export class PositionController {
-  constructor(private readonly positionService: PositionService) {}
+  constructor(
+    private readonly positionService: PositionService,
+    private readonly tpslMonitorService: TpslMonitorService,
+  ) {}
 
   @Get()
   findAll(
@@ -37,6 +41,12 @@ export class PositionController {
   @Post('reconcile/:strategyId')
   reconcile(@Param('strategyId') strategyId: string) {
     return this.positionService.reconcile(strategyId);
+  }
+
+  /** 手动触发条件单对账：同步已成交 TP/SL，撤销残留挂单 */
+  @Post('sync-conditional/:strategyId')
+  syncConditional(@Param('strategyId') strategyId: string) {
+    return this.tpslMonitorService.syncStrategyConditionalFills(strategyId);
   }
 
   @Get(':id')

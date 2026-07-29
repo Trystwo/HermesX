@@ -272,12 +272,20 @@ export class PositionService {
   }
 
   /**
-   * 仓位对账 - 对比数据库仓位与交易所实际持仓
+   * 仓位对账 - Hedge 模式下按 side 汇总数量对比（交易所合并仓）
    */
   async reconcile(strategyId: string): Promise<{
     matched: number;
     dbOnly: number;
     exchangeOnly: number;
+    sides: Array<{
+      side: string;
+      dbCount: number;
+      dbQty: number;
+      exchangeQty: number;
+      qtyDiff: number;
+      status: 'MATCHED' | 'DB_HEAVY' | 'EXCHANGE_HEAVY';
+    }>;
     details: any[];
   }> {
     const strategy = await this.prisma.strategy.findUnique({
@@ -287,71 +295,96 @@ export class PositionService {
       throw new NotFoundException(`Strategy ${strategyId} not found`);
     }
 
-    // 数据库中 OPEN 仓位
     const dbPositions = await this.prisma.position.findMany({
       where: { strategyId, status: PositionStatus.OPEN },
     });
 
-    // 交易所实际持仓
     const exchange = await this.exchangeService.getExchangeForStrategy(strategyId);
-    const exchangePositions = await this.exchangeService.fetchPositions(exchange, [strategy.symbol]);
+    const exchangePositions = await this.exchangeService.fetchPositions(exchange, [
+      strategy.symbol,
+    ]);
 
-    const details: any[] = [];
-    let matched = 0;
-    const matchedExchangeIds = new Set<string>();
-
-    // 匹配数据库仓位
-    for (const dbPos of dbPositions) {
-      const side = dbPos.side === PositionSide.LONG ? 'LONG' : 'SHORT';
-      const exchangePos = exchangePositions.find(
-        (ep) => ep.side === side && Math.abs(ep.contracts - dbPos.quantity) < 0.0001,
-      );
-
-      if (exchangePos) {
-        matched++;
-        matchedExchangeIds.add(`${exchangePos.side}:${exchangePos.contracts}`);
-        details.push({
-          dbPositionId: dbPos.id,
-          side: dbPos.side,
-          dbQty: dbPos.quantity,
-          exchangeQty: exchangePos.contracts,
-          entryPriceDb: dbPos.entryPrice,
-          entryPriceExchange: exchangePos.entryPrice,
-          status: 'MATCHED',
-        });
-      } else {
-        details.push({
-          dbPositionId: dbPos.id,
-          side: dbPos.side,
-          dbQty: dbPos.quantity,
-          status: 'DB_ONLY',
-        });
-      }
+    const normalized = strategy.symbol.replace(/[:/]/g, '').toUpperCase();
+    const exchangeQtyBySide = new Map<string, number>([
+      ['LONG', 0],
+      ['SHORT', 0],
+    ]);
+    const exchangeEntryBySide = new Map<string, number>();
+    for (const ep of exchangePositions) {
+      const pSym = (ep.symbol || '').replace(/[:/]/g, '').toUpperCase();
+      const symOk =
+        pSym === normalized ||
+        pSym.includes(normalized) ||
+        normalized.includes(pSym.replace('USDTUSDT', 'USDT'));
+      if (!symOk) continue;
+      const side = (ep.side || '').toUpperCase();
+      if (side !== 'LONG' && side !== 'SHORT') continue;
+      exchangeQtyBySide.set(side, (exchangeQtyBySide.get(side) ?? 0) + (ep.contracts || 0));
+      if (ep.entryPrice != null) exchangeEntryBySide.set(side, ep.entryPrice);
     }
 
-    // 交易所独有仓位
-    const exchangeOnly = exchangePositions.filter(
-      (ep) => !matchedExchangeIds.has(`${ep.side}:${ep.contracts}`),
-    );
-    for (const ep of exchangeOnly) {
-      details.push({
-        side: ep.side,
-        exchangeQty: ep.contracts,
-        entryPriceExchange: ep.entryPrice,
-        status: 'EXCHANGE_ONLY',
-      });
+    const dbBySide = new Map<string, { count: number; qty: number }>([
+      ['LONG', { count: 0, qty: 0 }],
+      ['SHORT', { count: 0, qty: 0 }],
+    ]);
+    for (const p of dbPositions) {
+      const side = p.side === PositionSide.LONG ? 'LONG' : 'SHORT';
+      const cur = dbBySide.get(side)!;
+      cur.count += 1;
+      cur.qty += p.quantity;
+    }
+
+    const sides: Array<{
+      side: string;
+      dbCount: number;
+      dbQty: number;
+      exchangeQty: number;
+      qtyDiff: number;
+      status: 'MATCHED' | 'DB_HEAVY' | 'EXCHANGE_HEAVY';
+    }> = [];
+    const details: any[] = [];
+    let matched = 0;
+    let dbOnly = 0;
+    let exchangeOnly = 0;
+
+    for (const side of ['LONG', 'SHORT']) {
+      const db = dbBySide.get(side)!;
+      const exchangeQty = exchangeQtyBySide.get(side) ?? 0;
+      const qtyDiff = +(db.qty - exchangeQty).toFixed(8);
+      let status: 'MATCHED' | 'DB_HEAVY' | 'EXCHANGE_HEAVY' = 'MATCHED';
+      if (Math.abs(qtyDiff) < 1e-8) {
+        status = 'MATCHED';
+        if (db.count > 0 || exchangeQty > 0) matched += 1;
+      } else if (qtyDiff > 0) {
+        status = 'DB_HEAVY';
+        dbOnly += 1;
+      } else {
+        status = 'EXCHANGE_HEAVY';
+        exchangeOnly += 1;
+      }
+
+      const row = {
+        side,
+        dbCount: db.count,
+        dbQty: db.qty,
+        exchangeQty,
+        qtyDiff,
+        status,
+        entryPriceExchange: exchangeEntryBySide.get(side),
+      };
+      sides.push(row);
+      details.push(row);
     }
 
     this.logger.log(
-      `Reconcile strategy ${strategyId}: matched=${matched}, dbOnly=${
-        dbPositions.length - matched
-      }, exchangeOnly=${exchangeOnly.length}`,
+      `Reconcile strategy ${strategyId}: sides=${JSON.stringify(sides)}`,
     );
 
     return {
       matched,
-      dbOnly: dbPositions.length - matched,
-      exchangeOnly: exchangeOnly.length,
+      dbOnly,
+      exchangeOnly,
+      sides,
       details,
     };
   }

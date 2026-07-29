@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderService } from '../order/order.service';
@@ -16,6 +16,8 @@ import {
 } from '../../common/constants/enums';
 import type { Order, Position, Strategy } from '@prisma/client';
 
+type OpenPositionRow = Position & { strategy: Strategy; orders: Order[] };
+
 /**
  * TP/SL 监控服务
  *
@@ -23,7 +25,8 @@ import type { Order, Position, Strategy } from '@prisma/client';
  * 1. 按 strategy/symbol 批量 fetchOpenOrders（含挂单时间 timestamp）
  * 2. 本地 PENDING 条件单若不在交易所挂单列表 → 视为已成交/消失
  * 3. 一侧消失、对侧仍挂着 → 同步仓位并取消对侧残留单
- * 4. 本地价格触发仅作 backup（localAutoCloseEnabled=true）
+ * 4. 两侧都消失 → 按同向合并仓 excessQty 消化僵尸 OPEN
+ * 5. 本地价格触发仅作 backup（localAutoCloseEnabled=true）
  */
 @Injectable()
 export class TpslMonitorService implements OnModuleInit {
@@ -31,6 +34,11 @@ export class TpslMonitorService implements OnModuleInit {
   /** 限频后暂停同步至该时间戳 */
   private rateLimitedUntil = 0;
   private syncRunning = false;
+  private syncStartedAt = 0;
+  /** syncRunning 超过该时长则强制复位 */
+  private static readonly SYNC_WATCHDOG_MS = 60_000;
+  /** 每同步 N 笔再刷新一次 openOrders，降低限频 */
+  private static readonly REFRESH_EVERY_N = 5;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -66,10 +74,20 @@ export class TpslMonitorService implements OnModuleInit {
    */
   @Cron('*/10 * * * * *')
   private async syncExchangeFills(): Promise<void> {
-    if (this.syncRunning) return;
+    if (this.syncRunning) {
+      if (Date.now() - this.syncStartedAt > TpslMonitorService.SYNC_WATCHDOG_MS) {
+        this.logger.warn(
+          `TP/SL syncRunning stuck >${TpslMonitorService.SYNC_WATCHDOG_MS}ms; force reset`,
+        );
+        this.syncRunning = false;
+      } else {
+        return;
+      }
+    }
     if (Date.now() < this.rateLimitedUntil) return;
 
     this.syncRunning = true;
+    this.syncStartedAt = Date.now();
     try {
       const positions = await this.prisma.position.findMany({
         where: { status: PositionStatus.OPEN },
@@ -77,8 +95,7 @@ export class TpslMonitorService implements OnModuleInit {
       });
       if (positions.length === 0) return;
 
-      // 按 strategyId 分组，每个策略只拉一次 openOrders
-      const byStrategy = new Map<string, typeof positions>();
+      const byStrategy = new Map<string, OpenPositionRow[]>();
       for (const p of positions) {
         const list = byStrategy.get(p.strategyId) ?? [];
         list.push(p);
@@ -94,6 +111,54 @@ export class TpslMonitorService implements OnModuleInit {
     } finally {
       this.syncRunning = false;
     }
+  }
+
+  /**
+   * 手动触发：对指定策略做一轮条件单对账（含撤残留挂单）
+   */
+  async syncStrategyConditionalFills(strategyId: string): Promise<{
+    strategyId: string;
+    openBefore: number;
+    synced: number;
+    openAfter: number;
+    orphanPendingCanceled: number;
+  }> {
+    const strategy = await this.prisma.strategy.findUnique({
+      where: { id: strategyId },
+    });
+    if (!strategy) {
+      throw new NotFoundException(`Strategy ${strategyId} not found`);
+    }
+
+    const before = await this.prisma.position.count({
+      where: { strategyId, status: PositionStatus.OPEN },
+    });
+
+    const positions = await this.prisma.position.findMany({
+      where: { strategyId, status: PositionStatus.OPEN },
+      include: { strategy: true, orders: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const synced = await this.syncStrategyGroup(strategyId, positions);
+
+    const orphanPendingCanceled = await this.cancelOrphanPendingOrders(strategyId);
+
+    const after = await this.prisma.position.count({
+      where: { strategyId, status: PositionStatus.OPEN },
+    });
+
+    this.logger.log(
+      `Manual conditional sync strategy=${strategyId}: synced=${synced} open ${before}->${after} orphanCanceled=${orphanPendingCanceled}`,
+    );
+
+    return {
+      strategyId,
+      openBefore: before,
+      synced,
+      openAfter: after,
+      orphanPendingCanceled,
+    };
   }
 
   /**
@@ -116,11 +181,15 @@ export class TpslMonitorService implements OnModuleInit {
     }
   }
 
+  /**
+   * @returns 本轮成功同步的仓位数
+   */
   private async syncStrategyGroup(
     strategyId: string,
-    positions: Array<Position & { strategy: Strategy; orders: Order[] }>,
-  ): Promise<void> {
-    if (Date.now() < this.rateLimitedUntil) return;
+    positions: OpenPositionRow[],
+  ): Promise<number> {
+    if (positions.length === 0) return 0;
+    if (Date.now() < this.rateLimitedUntil) return 0;
 
     const symbol = positions[0].strategy.symbol;
     let exchange;
@@ -130,7 +199,7 @@ export class TpslMonitorService implements OnModuleInit {
       this.logger.warn(
         `Cannot get exchange for strategy ${strategyId}: ${(e as Error).message}`,
       );
-      return;
+      return 0;
     }
 
     let openOrders: OpenOrderInfo[];
@@ -139,62 +208,130 @@ export class TpslMonitorService implements OnModuleInit {
     } catch (e) {
       this.handleRateLimitError(e as Error);
       this.logger.warn(
-        `fetchOpenOrders ${symbol} failed: ${(e as Error).message}`,
+        `fetchOpenOrders ${symbol} failed (skip reconcile this round): ${(e as Error).message}`,
       );
-      return;
+      return 0;
     }
 
     const openIds = new Set(openOrders.map((o) => o.id).filter(Boolean));
 
-    // 挂单明细仅 debug；有 TP/SL 不对称时下面会 LOG
     if (openOrders.length > 0) {
       this.logger.debug(
         `Open conditional orders ${symbol}: ${openOrders.length}`,
       );
     }
 
+    // 按 side 预取交易所合约量与 DB OPEN 总量，供「两侧都 gone」使用
+    const { bySide: exchangeContractsBySide, ok: exchangePosOk } =
+      await this.fetchExchangeContractsBySide(exchange, symbol);
+    const dbOpenQtyBySide = this.sumDbOpenQtyBySide(positions);
+    const excessBySide = new Map<string, number>();
+    for (const side of ['LONG', 'SHORT']) {
+      const dbQty = dbOpenQtyBySide.get(side) ?? 0;
+      const exQty = exchangeContractsBySide.get(side) ?? 0;
+      excessBySide.set(side, dbQty - exQty);
+    }
+
+    // 先收集不对称填充（TP/SL 一侧还在），再处理两侧都 gone
+    type Planned =
+      | { kind: 'asymmetric'; position: OpenPositionRow; trigger: 'TP' | 'SL'; filled: Order }
+      | { kind: 'bothGone'; position: OpenPositionRow; trigger: 'TP' | 'SL'; filled?: Order };
+
+    const planned: Planned[] = [];
+    const bothGoneCandidates: OpenPositionRow[] = [];
+
     for (const position of positions) {
-      try {
-        const synced = await this.reconcilePositionAgainstOpenOrders(
-          position,
-          openIds,
-          openOrders,
-          exchange,
+      const decision = this.classifyAgainstOpenOrders(position, openIds, openOrders);
+      if (!decision) continue;
+      if (decision.kind === 'bothGone') {
+        bothGoneCandidates.push(position);
+      } else {
+        planned.push(decision);
+      }
+    }
+
+    // 两侧都 gone：按 createdAt 从旧到新，用 excessQty 消化（仓位查询失败则跳过，避免误平）
+    if (exchangePosOk && bothGoneCandidates.length > 0) {
+      bothGoneCandidates.sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+      );
+      for (const position of bothGoneCandidates) {
+        const side = position.side.toUpperCase();
+        const excess = excessBySide.get(side) ?? 0;
+        if (excess + 1e-12 < position.quantity) {
+          continue;
+        }
+        const trigger = await this.inferTriggerType(position);
+        const pendingTp = this.latestPending(
+          position.orders,
+          OrderType.TAKE_PROFIT_MARKET,
         );
-        if (synced) {
-          // 同步后挂单列表可能变化，刷新本策略后续比对
+        const pendingSl = this.latestPending(
+          position.orders,
+          OrderType.STOP_MARKET,
+        );
+        const filled = trigger === 'TP' ? pendingTp : pendingSl;
+        this.logger.warn(
+          `Both TP/SL gone & excessQty for ${position.id} (${side} excess=${excess.toFixed(6)}), syncing as ${trigger}`,
+        );
+        planned.push({ kind: 'bothGone', position, trigger, filled });
+        excessBySide.set(side, excess - position.quantity);
+      }
+    } else if (bothGoneCandidates.length > 0 && !exchangePosOk) {
+      this.logger.warn(
+        `Skip ${bothGoneCandidates.length} both-gone candidates: exchange positions unavailable`,
+      );
+    }
+
+    let synced = 0;
+    for (const item of planned) {
+      try {
+        const ok =
+          item.kind === 'asymmetric'
+            ? await this.applyFillSync(item.position, item.trigger, item.filled)
+            : item.filled
+              ? await this.applyFillSync(item.position, item.trigger, item.filled)
+              : !!(await this.orderService.syncClosedByConditionalFill(
+                  item.position.id,
+                  item.trigger,
+                ));
+        if (!ok) continue;
+        synced++;
+
+        if (synced % TpslMonitorService.REFRESH_EVERY_N === 0) {
           try {
-            openOrders = await this.exchangeService.fetchOpenOrders(
-              exchange,
-              symbol,
-            );
+            openOrders = await this.exchangeService.fetchOpenOrders(exchange, symbol);
             openIds.clear();
             for (const o of openOrders) {
               if (o.id) openIds.add(o.id);
             }
           } catch (e) {
             this.handleRateLimitError(e as Error);
+            this.logger.warn(
+              `Refresh openOrders after sync failed: ${(e as Error).message}`,
+            );
             break;
           }
         }
       } catch (e) {
         this.handleRateLimitError(e as Error);
         this.logger.error(
-          `Reconcile position ${position.id} failed: ${(e as Error).message}`,
+          `Reconcile position ${item.position.id} failed: ${(e as Error).message}`,
         );
       }
     }
+
+    return synced;
   }
 
-  /**
-   * 用交易所当前挂单集合判断本地 PENDING TP/SL 是否已消失（成交）
-   */
-  private async reconcilePositionAgainstOpenOrders(
-    position: Position & { strategy: Strategy; orders: Order[] },
+  private classifyAgainstOpenOrders(
+    position: OpenPositionRow,
     openIds: Set<string>,
     openOrders: OpenOrderInfo[],
-    exchange: Awaited<ReturnType<ExchangeService['getExchangeForStrategy']>>,
-  ): Promise<boolean> {
+  ):
+    | { kind: 'asymmetric'; position: OpenPositionRow; trigger: 'TP' | 'SL'; filled: Order }
+    | { kind: 'bothGone'; position: OpenPositionRow }
+    | null {
     const pendingTp = this.latestPending(
       position.orders,
       OrderType.TAKE_PROFIT_MARKET,
@@ -205,7 +342,7 @@ export class TpslMonitorService implements OnModuleInit {
     );
 
     if (!pendingTp && !pendingSl) {
-      return false;
+      return null;
     }
 
     const tpAlive = !!(pendingTp?.exchangeOrderId && openIds.has(pendingTp.exchangeOrderId));
@@ -213,7 +350,6 @@ export class TpslMonitorService implements OnModuleInit {
     const tpGone = !!(pendingTp?.exchangeOrderId && !tpAlive);
     const slGone = !!(pendingSl?.exchangeOrderId && !slAlive);
 
-    // 对侧仍挂着时，消失的一侧即为成交
     if (tpGone && slAlive) {
       const slEx = openOrders.find((o) => o.id === pendingSl!.exchangeOrderId);
       this.logger.log(
@@ -221,7 +357,7 @@ export class TpslMonitorService implements OnModuleInit {
           slEx?.datetime ?? (slEx?.timestamp ? new Date(slEx.timestamp).toISOString() : '?')
         }`,
       );
-      return this.applyFillSync(position, 'TP', pendingTp!);
+      return { kind: 'asymmetric', position, trigger: 'TP', filled: pendingTp! };
     }
 
     if (slGone && tpAlive) {
@@ -231,23 +367,21 @@ export class TpslMonitorService implements OnModuleInit {
           tpEx?.datetime ?? (tpEx?.timestamp ? new Date(tpEx.timestamp).toISOString() : '?')
         }`,
       );
-      return this.applyFillSync(position, 'SL', pendingSl!);
+      return { kind: 'asymmetric', position, trigger: 'SL', filled: pendingSl! };
     }
 
-    // 两侧都消失：核对交易所仓位，推断 TP/SL
     if (tpGone && slGone) {
-      return this.syncIfExchangePositionFlat(position, exchange, pendingTp, pendingSl);
+      return { kind: 'bothGone', position };
     }
 
-    // 仅一侧本地有单且已消失
     if (tpGone && !pendingSl) {
-      return this.applyFillSync(position, 'TP', pendingTp!);
+      return { kind: 'asymmetric', position, trigger: 'TP', filled: pendingTp! };
     }
     if (slGone && !pendingTp) {
-      return this.applyFillSync(position, 'SL', pendingSl!);
+      return { kind: 'asymmetric', position, trigger: 'SL', filled: pendingSl! };
     }
 
-    return false;
+    return null;
   }
 
   private async applyFillSync(
@@ -357,69 +491,100 @@ export class TpslMonitorService implements OnModuleInit {
     }
   }
 
-  private async syncIfExchangePositionFlat(
-    position: Position & { strategy: Strategy },
+  private async fetchExchangeContractsBySide(
     exchange: Awaited<ReturnType<ExchangeService['getExchangeForStrategy']>>,
-    pendingTp?: Order,
-    pendingSl?: Order,
-  ): Promise<boolean> {
+    symbol: string,
+  ): Promise<{ bySide: Map<string, number>; ok: boolean }> {
+    const map = new Map<string, number>([
+      ['LONG', 0],
+      ['SHORT', 0],
+    ]);
     try {
-      const positions = await this.exchangeService.fetchPositions(exchange, [
-        position.strategy.symbol,
-      ]);
-      const normalized = position.strategy.symbol
-        .replace(/[:/]/g, '')
-        .toUpperCase();
-      const targetSide = position.side.toUpperCase();
-      const match = positions.find((p) => {
+      const positions = await this.exchangeService.withTimeout(
+        this.exchangeService.fetchPositions(exchange, [symbol]),
+        `fetchPositions(${symbol})`,
+      );
+      const normalized = symbol.replace(/[:/]/g, '').toUpperCase();
+      for (const p of positions) {
         const pSym = (p.symbol || '').replace(/[:/]/g, '').toUpperCase();
         const symOk =
           pSym === normalized ||
           pSym.includes(normalized) ||
           normalized.includes(pSym.replace('USDTUSDT', 'USDT'));
-        return symOk && p.side === targetSide;
-      });
-      const contracts = match?.contracts ?? 0;
-      if (contracts + 1e-12 >= position.quantity) {
-        return false;
-      }
-
-      let triggerType: 'TP' | 'SL' = 'TP';
-      try {
-        const price = await this.marketService.getPrice(position.strategy.symbol);
-        const tp = position.takeProfitPrice;
-        const sl = position.stopLossPrice;
-        if (tp != null && sl != null) {
-          triggerType =
-            Math.abs(price - tp) <= Math.abs(price - sl) ? 'TP' : 'SL';
-        } else if (sl != null && tp == null) {
-          triggerType = 'SL';
+        if (!symOk) continue;
+        const side = (p.side || '').toUpperCase();
+        if (side === 'LONG' || side === 'SHORT') {
+          map.set(side, (map.get(side) ?? 0) + (p.contracts || 0));
         }
-      } catch {
-        // default TP
       }
-
-      this.logger.warn(
-        `Both TP/SL gone & exchange flat for ${position.id} (${position.side} contracts=${contracts}), syncing as ${triggerType}`,
-      );
-
-      const filledOrder =
-        triggerType === 'TP' ? pendingTp : pendingSl;
-      if (filledOrder) {
-        return this.applyFillSync(position, triggerType, filledOrder);
-      }
-      const updated = await this.orderService.syncClosedByConditionalFill(
-        position.id,
-        triggerType,
-      );
-      return !!updated;
+      return { bySide: map, ok: true };
     } catch (e) {
       this.handleRateLimitError(e as Error);
-      this.logger.debug(
-        `Flat-position fallback failed for ${position.id}: ${(e as Error).message}`,
+      this.logger.warn(
+        `fetchPositions for excessQty failed: ${(e as Error).message}`,
       );
-      return false;
+      return { bySide: map, ok: false };
     }
+  }
+
+  private sumDbOpenQtyBySide(positions: OpenPositionRow[]): Map<string, number> {
+    const map = new Map<string, number>([
+      ['LONG', 0],
+      ['SHORT', 0],
+    ]);
+    for (const p of positions) {
+      const side = p.side.toUpperCase();
+      map.set(side, (map.get(side) ?? 0) + p.quantity);
+    }
+    return map;
+  }
+
+  private async inferTriggerType(
+    position: Position & { strategy: Strategy },
+  ): Promise<'TP' | 'SL'> {
+    try {
+      const price = await this.marketService.getPrice(position.strategy.symbol);
+      const tp = position.takeProfitPrice;
+      const sl = position.stopLossPrice;
+      if (tp != null && sl != null) {
+        return Math.abs(price - tp) <= Math.abs(price - sl) ? 'TP' : 'SL';
+      }
+      if (sl != null && tp == null) return 'SL';
+    } catch {
+      // default TP
+    }
+    return 'TP';
+  }
+
+  /**
+   * 清理已非 OPEN 仓位上残留的 PENDING 条件单（交易所 + DB）
+   */
+  private async cancelOrphanPendingOrders(strategyId: string): Promise<number> {
+    const orphans = await this.prisma.order.findMany({
+      where: {
+        status: OrderStatus.PENDING,
+        type: { in: [OrderType.TAKE_PROFIT_MARKET, OrderType.STOP_MARKET] },
+        position: {
+          strategyId,
+          status: { not: PositionStatus.OPEN },
+        },
+      },
+      select: { positionId: true },
+      distinct: ['positionId'],
+    });
+
+    let canceled = 0;
+    for (const { positionId } of orphans) {
+      try {
+        await this.orderService.cancelPendingOrders(positionId);
+        canceled += 1;
+      } catch (e) {
+        this.logger.warn(
+          `Cancel orphan pending for ${positionId} failed: ${(e as Error).message}`,
+        );
+      }
+    }
+    return canceled;
   }
 
   private handleRateLimitError(e: Error): void {
@@ -429,7 +594,6 @@ export class TpslMonitorService implements OnModuleInit {
     }
     const match = msg.match(/banned until (\d+)/i);
     const parsedUntil = match ? Number(match[1]) : 0;
-    // 若交易所返回的解封时间已过期仍报 -1003，额外冷却 90s，避免空转刷限频
     const until = Math.max(parsedUntil + 2000, Date.now() + 90_000);
     this.rateLimitedUntil = Math.max(this.rateLimitedUntil, until);
     this.logger.warn(

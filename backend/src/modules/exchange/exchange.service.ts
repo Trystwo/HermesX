@@ -287,18 +287,42 @@ export class ExchangeService implements OnModuleDestroy {
     };
   }
 
+  private static readonly REST_TIMEOUT_MS = 15_000;
+
+  /**
+   * 为交易所 REST 调用加超时，避免 cancel/fetch 挂起拖死监控
+   */
+  async withTimeout<T>(promise: Promise<T>, label: string, ms = ExchangeService.REST_TIMEOUT_MS): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`${label} timed out after ${ms}ms`)),
+            ms,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /**
    * 查询当前未成交挂单。
    * Binance U本位条件单已迁到 Algo API：普通 openOrders 不含 TP/SL，
    * 需同时拉 fapi openAlgoOrders（含 createTime 挂单时间）。
+   * Algo 拉取失败必须抛错，禁止返回空列表（否则监控会误判全部已成交）。
    */
   async fetchOpenOrders(
     exchange: Exchange,
     symbol?: string,
   ): Promise<OpenOrderInfo[]> {
-    const regular = symbol
-      ? await exchange.fetchOpenOrders(symbol)
-      : await exchange.fetchOpenOrders();
+    const regular = await this.withTimeout(
+      symbol ? exchange.fetchOpenOrders(symbol) : exchange.fetchOpenOrders(),
+      `fetchOpenOrders(${symbol ?? 'ALL'})`,
+    );
 
     const fromRegular: OpenOrderInfo[] = (regular || []).map((o: any) => ({
       id: String(o.id ?? ''),
@@ -339,20 +363,26 @@ export class ExchangeService implements OnModuleDestroy {
   /**
    * Binance 条件单（STOP_MARKET / TAKE_PROFIT_MARKET）开放挂单
    * GET /fapi/v1/openAlgoOrders — 返回 algoId + createTime
+   * 失败抛错，由调用方跳过本轮对账（不可当作「无挂单」）。
    */
   async fetchOpenAlgoOrders(
     exchange: Exchange,
     symbol?: string,
   ): Promise<OpenOrderInfo[]> {
+    const params: Record<string, string> = {};
+    if (symbol) {
+      params.symbol = symbol.includes('/')
+        ? symbol.split(':')[0].replace('/', '')
+        : symbol.replace(/[:/]/g, '').replace(/USDTUSDT$/, 'USDT');
+    }
     try {
-      const params: Record<string, string> = {};
-      if (symbol) {
-        params.symbol = symbol.includes('/')
-          ? symbol.split(':')[0].replace('/', '')
-          : symbol.replace(/[:/]/g, '').replace(/USDTUSDT$/, 'USDT');
-      }
-      const raw = await (exchange as any).fapiPrivateGetOpenAlgoOrders(params);
-      const list: any[] = Array.isArray(raw) ? raw : raw?.orders ?? [];
+      const raw = await this.withTimeout(
+        (exchange as any).fapiPrivateGetOpenAlgoOrders(params),
+        `fetchOpenAlgoOrders(${params.symbol ?? 'ALL'})`,
+      );
+      const list: any[] = Array.isArray(raw)
+        ? raw
+        : ((raw as { orders?: any[] } | null)?.orders ?? []);
       return list.map((o) => {
         const createTime = Number(o.createTime ?? o.bookTime ?? o.updateTime ?? 0);
         return {
@@ -378,10 +408,9 @@ export class ExchangeService implements OnModuleDestroy {
         } satisfies OpenOrderInfo;
       });
     } catch (e) {
-      this.logger.warn(
-        `fetchOpenAlgoOrders failed: ${(e as Error).message}`,
-      );
-      return [];
+      const msg = (e as Error).message;
+      this.logger.warn(`fetchOpenAlgoOrders failed: ${msg}`);
+      throw e;
     }
   }
 
@@ -394,21 +423,33 @@ export class ExchangeService implements OnModuleDestroy {
     symbol: string,
   ): Promise<void> {
     try {
-      await exchange.cancelOrder(orderId, symbol);
+      await this.withTimeout(
+        exchange.cancelOrder(orderId, symbol),
+        `cancelOrder(${orderId})`,
+      );
       return;
     } catch (e) {
       const msg = (e as Error).message || '';
+      const timedOut = msg.toLowerCase().includes('timed out');
+      if (timedOut) throw e;
+
       if (
         msg.includes('-2011') ||
         msg.includes('-2013') ||
         msg.toLowerCase().includes('unknown order') ||
         msg.toLowerCase().includes('does not exist')
       ) {
-        await (exchange as any).fapiPrivateDeleteAlgoOrder({ algoId: orderId });
+        await this.withTimeout(
+          (exchange as any).fapiPrivateDeleteAlgoOrder({ algoId: orderId }),
+          `deleteAlgoOrder(${orderId})`,
+        );
         return;
       }
       try {
-        await (exchange as any).fapiPrivateDeleteAlgoOrder({ algoId: orderId });
+        await this.withTimeout(
+          (exchange as any).fapiPrivateDeleteAlgoOrder({ algoId: orderId }),
+          `deleteAlgoOrder(${orderId})`,
+        );
         return;
       } catch {
         throw e;

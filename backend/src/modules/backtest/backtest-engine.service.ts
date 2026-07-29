@@ -79,8 +79,10 @@ export class BacktestEngineService {
         cumulativeFees += t.closeFee;
       }
 
-      // 2) 本根 K 线作为新周期：若未达 maxPositions 且保证金充足，双边开仓
-      if (openPositions.length + 2 <= params.maxPositions) {
+      // 2) 本根 K 线作为新周期：未达 maxPositions（周期组数）且保证金充足则双边开仓
+      // 单侧已平、仅剩 1 腿时仍占 1 个周期组；组数未满即可再开一对多空
+      const openCycleCount = new Set(openPositions.map((p) => p.cycleId)).size;
+      if (openCycleCount < params.maxPositions) {
         const qty = this.calcQuantity(params.quantity, params.quantityType, bar.open);
         if (qty > 0) {
           const leverage = params.leverage > 0 ? params.leverage : 1;

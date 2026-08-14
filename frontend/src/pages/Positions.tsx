@@ -1,15 +1,16 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, ShieldPlus, XCircle } from 'lucide-react'
-import { positionsApi, PositionFilter } from '@/api/positions'
+import { RefreshCw, Search, ShieldPlus, XCircle } from 'lucide-react'
+import { positionsApi, PositionFilter, OrphanOrderInfo } from '@/api/positions'
 import { strategiesApi } from '@/api/strategies'
 import { PositionTable } from '@/components/trading/PositionTable'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { Tabs } from '@/components/ui/Tabs'
-import { ConfirmModal } from '@/components/ui/Modal'
+import { Modal, ConfirmModal } from '@/components/ui/Modal'
 import { toast } from '@/stores/toast'
+import { formatPrice, formatTime } from '@/utils/format'
 import type { PositionStatus, Side } from '@/types'
 
 const statusTabs = [
@@ -21,6 +22,10 @@ const statusTabs = [
   { key: 'ALL', label: '全部' },
 ]
 
+function orphanKindLabel(kind: OrphanOrderInfo['kind']) {
+  return kind === 'exchange_orphan' ? '交易所孤儿' : '本地残留'
+}
+
 export function Positions() {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState<string>('OPEN')
@@ -30,6 +35,7 @@ export function Positions() {
   const [closeAllOpen, setCloseAllOpen] = useState(false)
   const [batchTpSlOpen, setBatchTpSlOpen] = useState(false)
   const [placingTpSlId, setPlacingTpSlId] = useState<string | null>(null)
+  const [orphanReport, setOrphanReport] = useState<OrphanOrderInfo[] | null>(null)
 
   const filter: PositionFilter = {
     status: status === 'ALL' ? undefined : (status as PositionStatus),
@@ -111,6 +117,42 @@ export function Positions() {
     onError: (e) => toast.error((e as Error).message),
   })
 
+  const checkOrphanMutation = useMutation({
+    mutationFn: () => positionsApi.checkOrphanOrders(strategyId || undefined),
+    onSuccess: (res) => {
+      if (res.orphans.length === 0) {
+        setOrphanReport(null)
+        toast.success(
+          `未发现孤儿单（交易所 ${res.exchangeOpen} / 本地 PENDING ${res.pendingDb}）`,
+        )
+        return
+      }
+      setOrphanReport(res.orphans)
+      toast.info(`发现 ${res.orphans.length} 笔孤儿单`)
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
+  const cleanupOrphanMutation = useMutation({
+    mutationFn: () =>
+      positionsApi.cleanupOrphanOrders(
+        strategyId || undefined,
+        orphanReport?.map((o) => o.algoId),
+      ),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['positions'] })
+      queryClient.invalidateQueries({ queryKey: ['orders'] })
+      const failed = res.attempted - res.succeeded
+      if (failed === 0) {
+        toast.success(`已清理 ${res.succeeded} 笔孤儿单`)
+      } else {
+        toast.error(`清理完成：成功 ${res.succeeded}，失败 ${failed}`)
+      }
+      setOrphanReport(null)
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -124,6 +166,15 @@ export function Positions() {
           <Button variant="ghost" size="sm" onClick={() => refetch()}>
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
             刷新
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={checkOrphanMutation.isPending}
+            onClick={() => checkOrphanMutation.mutate()}
+          >
+            <Search size={14} />
+            检查孤儿单
           </Button>
           {status === 'OPEN' && missingTpSlCount > 0 && (
             <Button variant="secondary" size="sm" onClick={() => setBatchTpSlOpen(true)}>
@@ -238,6 +289,70 @@ export function Positions() {
           </div>
         }
       />
+
+      <Modal
+        open={orphanReport !== null && orphanReport.length > 0}
+        onClose={() => !cleanupOrphanMutation.isPending && setOrphanReport(null)}
+        title={`发现 ${orphanReport?.length ?? 0} 笔孤儿单`}
+        width={720}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={cleanupOrphanMutation.isPending}
+              onClick={() => setOrphanReport(null)}
+            >
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              loading={cleanupOrphanMutation.isPending}
+              onClick={() => cleanupOrphanMutation.mutate()}
+            >
+              确认清理
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-fg-muted">
+            以下挂单与本地 PENDING 不一致。确认后将撤销交易所残留条件单，并清理本地残留 PENDING。
+            {strategyId ? '（按当前筛选策略对应账户/交易对扫描）' : ''}
+          </p>
+          <div className="overflow-x-auto border border-border rounded-md">
+            <table className="w-full text-xs">
+              <thead className="bg-bg-elevated text-fg-muted">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium">类型</th>
+                  <th className="text-left px-3 py-2 font-medium">策略</th>
+                  <th className="text-left px-3 py-2 font-medium">方向</th>
+                  <th className="text-left px-3 py-2 font-medium">触发价</th>
+                  <th className="text-left px-3 py-2 font-medium">algoId</th>
+                  <th className="text-left px-3 py-2 font-medium">时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(orphanReport ?? []).map((o) => (
+                  <tr key={`${o.kind}-${o.algoId}`} className="border-t border-border">
+                    <td className="px-3 py-2 text-fg">{orphanKindLabel(o.kind)}</td>
+                    <td className="px-3 py-2 text-fg">{o.strategyName}</td>
+                    <td className="px-3 py-2 text-fg">
+                      {(o.positionSide || o.side || '--').toUpperCase()} / {o.orderType}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-fg">{formatPrice(o.triggerPrice)}</td>
+                    <td className="px-3 py-2 font-mono text-fg-muted">{o.algoId}</td>
+                    <td className="px-3 py-2 text-fg-muted whitespace-nowrap">
+                      {formatTime(o.createTime)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

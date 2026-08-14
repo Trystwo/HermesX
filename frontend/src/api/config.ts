@@ -2,7 +2,6 @@ import { apiClient } from './client'
 import type {
   ApiConfig,
   CreateApiConfigInput,
-  Environment,
   TestConnectionResult,
 } from '@/types'
 
@@ -26,9 +25,9 @@ export const configApi = {
   deleteApiConfig: (id: string | number) =>
     apiClient.delete(`/api/config/exchange/${id}`).then((r) => r.data),
 
-  testConnection: (environment: Environment) =>
+  testConnection: (id: string | number) =>
     apiClient
-      .get<TestConnectionResult>('/api/config/exchange/test', { params: { environment } })
+      .get<TestConnectionResult>(`/api/config/exchange/test/${id}`)
       .then((r) => r.data),
 
   getRiskParams: () =>

@@ -9,6 +9,7 @@ export enum Environment {
 
 export enum ExchangeName {
   BINANCE = 'BINANCE',
+  LIGHTER = 'LIGHTER',
 }
 
 export enum CycleInterval {

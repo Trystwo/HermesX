@@ -87,11 +87,20 @@ export function Strategies() {
     updateStatusMutation.mutate({ id: strategy.id, status })
   }
 
-  const apiConfigOptions = (apiConfigs ?? []).map((c) => ({
-    label: `${c.exchange} · ${c.environment === 'TESTNET' ? '模拟盘' : '实盘'}`,
-    value: c.id,
-    environment: c.environment as 'TESTNET' | 'LIVE',
-  }))
+  const apiConfigOptions = (apiConfigs ?? []).map((c) => {
+    const envLabel = c.environment === 'TESTNET' ? '模拟盘' : '实盘'
+    const keyHint = c.apiKeyMasked ? ` · ${c.apiKeyMasked}` : ''
+    const acctHint =
+      c.exchange === 'LIGHTER' && c.accountIndex != null
+        ? ` · acct#${c.accountIndex}`
+        : ''
+    return {
+      label: `${c.name} · ${c.exchange} · ${envLabel}${acctHint}${keyHint}`,
+      value: c.id,
+      environment: c.environment as 'TESTNET' | 'LIVE',
+      exchange: c.exchange,
+    }
+  })
 
   return (
     <div className="space-y-4">
@@ -210,7 +219,12 @@ interface StrategyFormModalProps {
   open: boolean
   onClose: () => void
   strategy?: Strategy
-  apiConfigOptions: { label: string; value: string | number; environment: 'TESTNET' | 'LIVE' }[]
+  apiConfigOptions: {
+    label: string
+    value: string | number
+    environment: 'TESTNET' | 'LIVE'
+    exchange: string
+  }[]
 }
 
 function StrategyFormModal({ open, onClose, strategy, apiConfigOptions }: StrategyFormModalProps) {
@@ -230,20 +244,35 @@ function StrategyFormModal({ open, onClose, strategy, apiConfigOptions }: Strate
     marginMode: strategy?.marginMode ?? 'ISOLATED',
     localAutoCloseEnabled: strategy?.localAutoCloseEnabled ?? false,
     apiConfigId: strategy?.apiConfigId ?? null,
+    shortApiConfigId: strategy?.shortApiConfigId ?? null,
   })
 
   const [submitting, setSubmitting] = useState(false)
   const [liveChecked, setLiveChecked] = useState(false)
 
+  const selectedLong = apiConfigOptions.find(
+    (c) => String(c.value) === String(form.apiConfigId ?? ''),
+  )
   const selectedConfigEnv =
-    apiConfigOptions.find((c) => String(c.value) === String(form.apiConfigId ?? ''))
-      ?.environment ?? strategy?.environment ?? 'TESTNET'
+    selectedLong?.environment ?? strategy?.environment ?? 'TESTNET'
   const environment = selectedConfigEnv
+  const isLighter = selectedLong?.exchange === 'LIGHTER'
+
+  const shortOptions = apiConfigOptions.filter(
+    (c) =>
+      c.exchange === 'LIGHTER' &&
+      c.environment === environment &&
+      String(c.value) !== String(form.apiConfigId ?? ''),
+  )
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     if (!form.name.trim()) {
       toast.error('请输入策略名称')
+      return
+    }
+    if (isLighter && !form.shortApiConfigId) {
+      toast.error('Lighter 需另选空腿子账户 API 配置（不支持同账户双向持仓）')
       return
     }
     if (environment === 'LIVE' && !liveChecked && !isEdit) {
@@ -255,11 +284,15 @@ function StrategyFormModal({ open, onClose, strategy, apiConfigOptions }: Strate
     }
     setSubmitting(true)
     try {
+      const payload: CreateStrategyInput = {
+        ...form,
+        shortApiConfigId: isLighter ? form.shortApiConfigId : null,
+      }
       if (isEdit && strategy) {
-        await strategiesApi.update(strategy.id, form)
+        await strategiesApi.update(strategy.id, payload)
         toast.success('策略已更新')
       } else {
-        await strategiesApi.create(form)
+        await strategiesApi.create(payload)
         toast.success('策略已创建')
       }
       queryClient.invalidateQueries({ queryKey: ['strategies'] })
@@ -418,12 +451,13 @@ function StrategyFormModal({ open, onClose, strategy, apiConfigOptions }: Strate
         </div>
 
         <Select
-          label="绑定 API 配置"
+          label={isLighter ? '多腿 API 配置（做多子账户）' : '绑定 API 配置'}
           value={form.apiConfigId ?? ''}
           onChange={(e) =>
             setForm({
               ...form,
               apiConfigId: e.target.value || null,
+              shortApiConfigId: null,
             })
           }
           options={[
@@ -431,8 +465,34 @@ function StrategyFormModal({ open, onClose, strategy, apiConfigOptions }: Strate
             ...apiConfigOptions,
           ]}
         />
+        {isLighter && (
+          <>
+            <Select
+              label="空腿 API 配置（做空子账户）"
+              value={form.shortApiConfigId ?? ''}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  shortApiConfigId: e.target.value || null,
+                })
+              }
+              options={[
+                { label: '请选择空腿子账户', value: '' },
+                ...shortOptions,
+              ]}
+            />
+            <p className="text-xs text-warn -mt-2">
+              Lighter 不支持同账户双向持仓，需用两个不同 accountIndex 的子账户分别开多/开空。
+            </p>
+          </>
+        )}
+        {apiConfigOptions.length > 0 && !isLighter && (
+          <p className="text-xs text-fg-subtle -mt-2">
+            共 {apiConfigOptions.length} 套可用配置，同交易所可绑定不同账户
+          </p>
+        )}
 
-        {environment === 'LIVE' && !isEdit && (
+        {environment === 'LIVE' && (!isEdit || String(strategy?.apiConfigId ?? '') !== String(form.apiConfigId ?? '')) && (
           <div className="space-y-2">
             <div className="flex items-start gap-2 p-3 bg-up/10 border border-up/30 rounded-md">
               <AlertTriangle size={16} className="text-up shrink-0 mt-0.5" />
@@ -441,15 +501,17 @@ function StrategyFormModal({ open, onClose, strategy, apiConfigOptions }: Strate
                 <div className="mt-1">该策略将绑定实盘环境，启动后使用真实资金开仓。</div>
               </div>
             </div>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={liveChecked}
-                onChange={(e) => setLiveChecked(e.target.checked)}
-                className="rounded border-border"
-              />
-              <span className="text-xs text-fg-muted">我已知晓实盘风险，确认创建</span>
-            </label>
+            {!isEdit && (
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={liveChecked}
+                  onChange={(e) => setLiveChecked(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <span className="text-xs text-fg-muted">我已知晓实盘风险，确认创建</span>
+              </label>
+            )}
           </div>
         )}
 

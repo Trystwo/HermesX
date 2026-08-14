@@ -9,7 +9,7 @@ import { StrategyEngineService } from '../trading/strategy-engine.service';
 import { CreateStrategyDto } from './dto/create-strategy.dto';
 import { UpdateStrategyDto } from './dto/update-strategy.dto';
 import { UpdateStrategyStatusDto } from './dto/update-strategy-status.dto';
-import { Environment, StrategyStatus } from '../../common/constants/enums';
+import { Environment, ExchangeName, StrategyStatus } from '../../common/constants/enums';
 
 @Injectable()
 export class StrategyService {
@@ -29,6 +29,7 @@ export class StrategyService {
       where,
       include: {
         apiConfig: true,
+        shortApiConfig: true,
         _count: { select: { positions: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -41,6 +42,7 @@ export class StrategyService {
       where: { id },
       include: {
         apiConfig: true,
+        shortApiConfig: true,
         positions: {
           take: 50,
           orderBy: { createdAt: 'desc' },
@@ -54,6 +56,8 @@ export class StrategyService {
   }
 
   async create(dto: CreateStrategyDto) {
+    await this.validateApiConfigBinding(dto.apiConfigId, dto.shortApiConfigId);
+
     const strategy = await this.prisma.strategy.create({
       data: {
         name: dto.name,
@@ -68,10 +72,11 @@ export class StrategyService {
         marginMode: dto.marginMode ?? 'ISOLATED',
         localAutoCloseEnabled: dto.localAutoCloseEnabled ?? false,
         apiConfigId: dto.apiConfigId,
+        shortApiConfigId: dto.shortApiConfigId,
         isActive: dto.isActive ?? false,
         status: StrategyStatus.IDLE,
       },
-      include: { apiConfig: true },
+      include: { apiConfig: true, shortApiConfig: true },
     });
     this.logger.log(`Created strategy: ${strategy.name} (${strategy.id})`);
 
@@ -83,14 +88,21 @@ export class StrategyService {
   }
 
   async update(id: string, dto: UpdateStrategyDto) {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
+    const nextLong =
+      dto.apiConfigId !== undefined ? dto.apiConfigId : existing.apiConfigId;
+    const nextShort =
+      dto.shortApiConfigId !== undefined
+        ? dto.shortApiConfigId
+        : (existing as { shortApiConfigId?: string | null }).shortApiConfigId;
+    await this.validateApiConfigBinding(nextLong, nextShort);
+
     const strategy = await this.prisma.strategy.update({
       where: { id },
       data: dto,
-      include: { apiConfig: true },
+      include: { apiConfig: true, shortApiConfig: true },
     });
 
-    // 运行中的策略参数变更后重新注册 cron（周期可能已改）
     if (strategy.isActive) {
       this.strategyEngine.registerStrategyCron(strategy);
     }
@@ -101,7 +113,6 @@ export class StrategyService {
   async updateStatus(id: string, dto: UpdateStrategyStatusDto) {
     const existing = await this.findOne(id);
 
-    // 前端传 RUNNING/PAUSED/STOPPED；同时驱动 isActive 与引擎 cron
     let isActive = dto.isActive;
     let status = dto.status;
 
@@ -116,7 +127,6 @@ export class StrategyService {
       isActive = false;
     }
 
-    // 实盘策略启动需二次确认，防止误触
     if (isActive) {
       const env =
         existing.apiConfig?.environment ??
@@ -131,6 +141,10 @@ export class StrategyService {
           '启动实盘策略需二次确认：请传 confirmLive=true',
         );
       }
+      await this.validateApiConfigBinding(
+        existing.apiConfigId,
+        (existing as { shortApiConfigId?: string | null }).shortApiConfigId,
+      );
     }
 
     const strategy = await this.prisma.strategy.update({
@@ -139,7 +153,7 @@ export class StrategyService {
         ...(status !== undefined && { status }),
         ...(isActive !== undefined && { isActive }),
       },
-      include: { apiConfig: true },
+      include: { apiConfig: true, shortApiConfig: true },
     });
 
     if (strategy.isActive) {
@@ -161,12 +175,98 @@ export class StrategyService {
     return { id, deleted: true };
   }
 
-  private withEnvironment<T extends { apiConfig?: { environment: string } | null }>(
-    strategy: T,
-  ) {
+  /**
+   * Lighter 必须绑定两个不同子账户；Binance 可只用多腿配置。
+   */
+  private async validateApiConfigBinding(
+    apiConfigId?: string | null,
+    shortApiConfigId?: string | null,
+  ): Promise<void> {
+    if (!apiConfigId) {
+      if (shortApiConfigId) {
+        throw new BadRequestException('绑定空腿配置前请先选择多腿 API 配置');
+      }
+      return;
+    }
+
+    const longCfg = await this.prisma.apiConfig.findUnique({
+      where: { id: apiConfigId },
+    });
+    if (!longCfg) {
+      throw new BadRequestException(`API 配置不存在: ${apiConfigId}`);
+    }
+
+    if (longCfg.exchange === ExchangeName.LIGHTER) {
+      if (!shortApiConfigId) {
+        throw new BadRequestException(
+          'Lighter 不支持同账户双向持仓，请另选一个子账户作为空腿 API 配置',
+        );
+      }
+      if (shortApiConfigId === apiConfigId) {
+        throw new BadRequestException('多腿与空腿必须使用不同的 API 配置');
+      }
+      const shortCfg = await this.prisma.apiConfig.findUnique({
+        where: { id: shortApiConfigId },
+      });
+      if (!shortCfg) {
+        throw new BadRequestException(`空腿 API 配置不存在: ${shortApiConfigId}`);
+      }
+      if (shortCfg.exchange !== ExchangeName.LIGHTER) {
+        throw new BadRequestException('空腿配置必须同为 Lighter');
+      }
+      if (shortCfg.environment !== longCfg.environment) {
+        throw new BadRequestException('多腿与空腿 API 环境必须一致');
+      }
+      if (
+        longCfg.accountIndex != null &&
+        shortCfg.accountIndex != null &&
+        Number(longCfg.accountIndex) === Number(shortCfg.accountIndex)
+      ) {
+        throw new BadRequestException(
+          '多腿与空腿必须使用不同的 Lighter accountIndex（子账户）',
+        );
+      }
+      return;
+    }
+
+    if (shortApiConfigId) {
+      throw new BadRequestException(
+        `${longCfg.exchange} 使用同账户双向持仓，无需绑定空腿 API 配置`,
+      );
+    }
+  }
+
+  private withEnvironment<
+    T extends {
+      apiConfig?: Record<string, any> | null;
+      shortApiConfig?: Record<string, any> | null;
+    },
+  >(strategy: T) {
     return {
       ...strategy,
+      apiConfig: this.serializeApiConfig(strategy.apiConfig),
+      shortApiConfig: this.serializeApiConfig(
+        (strategy as any).shortApiConfig ?? null,
+      ),
       environment: strategy.apiConfig?.environment ?? Environment.TESTNET,
+    };
+  }
+
+  /** 避免嵌套 ApiConfig.accountIndex(BigInt) 导致接口 500 */
+  private serializeApiConfig(config: Record<string, any> | null | undefined) {
+    if (!config) return null;
+    const { apiKey, apiSecret, accountIndex, ...rest } = config;
+    return {
+      ...rest,
+      accountIndex: accountIndex != null ? Number(accountIndex) : null,
+      apiKeyMasked:
+        typeof apiKey === 'string' && apiKey.length >= 8
+          ? `${apiKey.slice(0, 4)}****${apiKey.slice(-4)}`
+          : '***',
+      apiSecretMasked:
+        typeof apiSecret === 'string' && apiSecret.length >= 8
+          ? `${apiSecret.slice(0, 4)}****${apiSecret.slice(-4)}`
+          : '***',
     };
   }
 }

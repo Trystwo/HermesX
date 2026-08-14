@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import Redis from 'ioredis';
-import { ExchangeService } from '../exchange/exchange.service';
+import { ExchangeService, type ExchangeAdapter } from '../exchange/exchange.service';
 import { Environment } from '../../common/constants/enums';
 
 export interface TickerData {
@@ -15,13 +15,9 @@ export interface TickerData {
 
 /**
  * 行情服务
- * - 维护内存价格表(Map)
+ * - 维护内存价格表(Map)，带短 TTL，避免脏价长期滞留
+ * - 优先用 LIVE 公共行情（与 TESTNET 价格不可混用）
  * - 写入 Redis(供其他服务/进程共享)
- * - 定时轮询订阅的 symbol(不依赖 ccxt.pro)
- * - 断线重连(Redis)
- *
- * 说明: Binance 合约 WebSocket 需要单独实现,此处使用 REST 轮询作为基础方案。
- * 后续可替换为 ccxt.pro 或原生 ws 客户端。
  */
 @Injectable()
 export class MarketService implements OnModuleInit, OnModuleDestroy {
@@ -30,6 +26,8 @@ export class MarketService implements OnModuleInit, OnModuleDestroy {
   private readonly subscriptions = new Set<string>();
   private redis: Redis | null = null;
   private redisConnected = false;
+  /** 内存缓存最长有效期；超过则强制重新拉取 */
+  private readonly CACHE_MAX_AGE_MS = 5_000;
 
   constructor(
     private readonly exchangeService: ExchangeService,
@@ -85,82 +83,101 @@ export class MarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 订阅 symbol 行情
+   * 行情优先走实盘（TESTNET 价与实盘差很大，且部分 USDC 合约可能缺失）
+   * 返回 ExchangeAdapter（Binance 或 Lighter 公共/带钥客户端均可 fetchTicker）
    */
+  private async getQuoteExchange(): Promise<ExchangeAdapter> {
+    try {
+      return await this.exchangeService.getExchangeForEnvironment(Environment.LIVE);
+    } catch {
+      return await this.exchangeService.getExchangeForEnvironment(Environment.TESTNET);
+    }
+  }
+
   subscribe(symbol: string): void {
     this.subscriptions.add(symbol);
     this.logger.log(`Subscribed to ${symbol}, total: ${this.subscriptions.size}`);
   }
 
-  /**
-   * 取消订阅
-   */
   unsubscribe(symbol: string): void {
     this.subscriptions.delete(symbol);
     this.logger.log(`Unsubscribed ${symbol}, remaining: ${this.subscriptions.size}`);
   }
 
   /**
-   * 获取最新价格(优先内存,其次 Redis,最后实时查询)
+   * 获取最新价格(优先未过期内存缓存,其次 Redis,最后实时查询)
    */
   async getPrice(symbol: string): Promise<number> {
     const cached = this.priceMap.get(symbol);
-    if (cached) {
+    if (cached && Date.now() - cached.timestamp <= this.CACHE_MAX_AGE_MS) {
       return cached.lastPrice;
     }
 
     if (this.redisConnected && this.redis) {
       const raw = await this.redis.get(`market:price:${symbol}`);
       if (raw) {
-        return parseFloat(raw);
+        const n = parseFloat(raw);
+        if (Number.isFinite(n) && n > 0) return n;
       }
     }
 
-    // 实时查询
     try {
-      const exchange = await this.exchangeService.getExchangeForEnvironment(Environment.TESTNET);
+      const exchange = await this.getQuoteExchange();
       const ticker = await this.exchangeService.fetchTicker(exchange, symbol);
       this.updatePrice(symbol, ticker);
       return ticker.lastPrice;
     } catch (e) {
       this.logger.error(`Failed to fetch price for ${symbol}: ${(e as Error).message}`);
+      // 过期缓存兜底，避免整轮周期因行情短暂失败中断
+      if (cached?.lastPrice) return cached.lastPrice;
       throw e;
     }
   }
 
-  /**
-   * 获取完整 Ticker
-   */
   async getTicker(symbol: string): Promise<TickerData> {
     const cached = this.priceMap.get(symbol);
-    if (cached) {
+    if (cached && Date.now() - cached.timestamp <= this.CACHE_MAX_AGE_MS) {
       return cached;
     }
-    const exchange = await this.exchangeService.getExchangeForEnvironment(Environment.TESTNET);
+    const exchange = await this.getQuoteExchange();
     const ticker = await this.exchangeService.fetchTicker(exchange, symbol);
     this.updatePrice(symbol, ticker);
     return ticker;
   }
 
-  /**
-   * 获取 K 线
-   */
   async getKlines(symbol: string, interval: string, limit: number = 100) {
-    const exchange = await this.exchangeService.getExchangeForEnvironment(Environment.TESTNET);
-    return this.exchangeService.fetchKlines(exchange, symbol, interval, limit);
+    const exchange = await this.getQuoteExchange();
+    try {
+      return await this.exchangeService.fetchKlines(exchange, symbol, interval, limit);
+    } catch (e) {
+      // Lighter 首版不提供 OHLCV：回退 Binance public（仅行情/回测辅助）
+      this.logger.warn(
+        `fetchKlines via ${exchange.exchangeName} failed, fallback Binance public: ${(e as Error).message}`,
+      );
+      const { default: ccxt } = await import('ccxt');
+      const publicEx = new ccxt.binance({
+        enableRateLimit: true,
+        options: { defaultType: 'future', fetchMarkets: ['linear'], fetchCurrencies: false },
+      });
+      const ohlcv = await publicEx.fetchOHLCV(symbol, interval, undefined, limit);
+      return ohlcv.map((k: any) => ({
+        timestamp: k[0],
+        open: k[1],
+        high: k[2],
+        low: k[3],
+        close: k[4],
+        volume: k[5],
+      }));
+    }
   }
 
-  /**
-   * 定时刷新订阅的行情(每 2 秒)
-   */
   @Cron('*/2 * * * * *')
   private async refreshPrices(): Promise<void> {
     if (this.subscriptions.size === 0) return;
 
     const symbols = Array.from(this.subscriptions);
     try {
-      const exchange = await this.exchangeService.getExchangeForEnvironment(Environment.TESTNET);
-      // 并发拉取
+      const exchange = await this.getQuoteExchange();
       const results = await Promise.allSettled(
         symbols.map(async (symbol) => {
           const ticker = await this.exchangeService.fetchTicker(exchange, symbol);
@@ -177,21 +194,21 @@ export class MarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   private updatePrice(symbol: string, ticker: TickerData): void {
-    this.priceMap.set(symbol, ticker);
-    // 写入 Redis(异步,失败不阻塞)
+    const withTs: TickerData = {
+      ...ticker,
+      timestamp: ticker.timestamp || Date.now(),
+    };
+    this.priceMap.set(symbol, withTs);
     if (this.redisConnected && this.redis) {
       this.redis
-        .set(`market:price:${symbol}`, ticker.lastPrice.toString(), 'EX', 30)
+        .set(`market:price:${symbol}`, withTs.lastPrice.toString(), 'EX', 30)
         .catch((e) => this.logger.warn(`Redis write failed for ${symbol}: ${e.message}`));
       this.redis
-        .set(`market:ticker:${symbol}`, JSON.stringify(ticker), 'EX', 30)
+        .set(`market:ticker:${symbol}`, JSON.stringify(withTs), 'EX', 30)
         .catch(() => {});
     }
   }
 
-  /**
-   * 获取所有缓存价格
-   */
   getAllPrices(): TickerData[] {
     return Array.from(this.priceMap.values());
   }

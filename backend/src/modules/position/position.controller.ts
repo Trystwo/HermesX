@@ -38,6 +38,21 @@ export class PositionController {
     return this.positionService.placeTpSlMissing(strategyId);
   }
 
+  /** 检查孤儿条件单（交易所挂着但本地无 PENDING / 仓位已平本地仍 PENDING） */
+  @Post('orphan-orders/check')
+  checkOrphanOrders(@Body('strategyId') strategyId?: string) {
+    return this.positionService.checkOrphanOrders(strategyId);
+  }
+
+  /** 确认清理孤儿条件单；可传 algoIds 只清指定项 */
+  @Post('orphan-orders/cleanup')
+  cleanupOrphanOrders(
+    @Body('strategyId') strategyId?: string,
+    @Body('algoIds') algoIds?: string[],
+  ) {
+    return this.positionService.cleanupOrphanOrders(strategyId, algoIds);
+  }
+
   @Post('reconcile/:strategyId')
   reconcile(@Param('strategyId') strategyId: string) {
     return this.positionService.reconcile(strategyId);

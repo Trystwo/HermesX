@@ -201,11 +201,26 @@ export class StrategyEngineService implements OnModuleInit {
         position: shortPosition as any,
       });
 
-      // 6. 挂 TP/SL
-      await this.orderService.placeTpSl(longPosition);
-      await this.orderService.placeTpSl(shortPosition);
+      // 6. 挂 TP/SL：两侧独立，一侧失败不阻断另一侧；开仓已成功则保持 RUNNING，避免 ERROR 循环叠仓
+      const tpSlResults = await Promise.allSettled([
+        this.orderService.placeTpSl(longPosition),
+        this.orderService.placeTpSl(shortPosition),
+      ]);
+      const tpSlErrors = tpSlResults
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r) => (r.reason as Error)?.message || String(r.reason));
+      if (tpSlErrors.length > 0) {
+        this.logger.error(
+          `TP/SL incomplete for cycle ${cycleId}: ${tpSlErrors.join(' | ')}`,
+        );
+        this.gateway.broadcastAlert({
+          type: 'TPSL_ERROR',
+          strategyId: strategy.id,
+          reason: tpSlErrors.join(' | '),
+          timestamp: Date.now(),
+        });
+      }
 
-      // 回到 RUNNING，便于前端状态展示；仓位侧由 position 列表体现持仓
       await this.updateStrategyStatus(strategy.id, StrategyStatus.RUNNING);
 
       this.gateway.broadcastStrategyStatus({
@@ -215,7 +230,8 @@ export class StrategyEngineService implements OnModuleInit {
       });
 
       this.logger.log(
-        `Cycle ${cycleId} completed: LONG=${longPosition.id} SHORT=${shortPosition.id}`,
+        `Cycle ${cycleId} completed: LONG=${longPosition.id} SHORT=${shortPosition.id}` +
+          (tpSlErrors.length ? ` (tpslErrors=${tpSlErrors.length})` : ''),
       );
     } catch (e) {
       const err = e as Error;

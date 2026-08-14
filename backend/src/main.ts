@@ -3,6 +3,12 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
 
+// Prisma BigInt（如 Lighter accountIndex）默认无法 JSON.stringify
+(BigInt.prototype as any).toJSON = function toJSON() {
+  const n = Number(this);
+  return Number.isSafeInteger(n) ? n : this.toString();
+};
+
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, {

@@ -9,6 +9,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import {
@@ -71,9 +72,17 @@ export class CreateStrategyDto {
   @IsBoolean()
   localAutoCloseEnabled?: boolean = false;
 
+  /** null / 省略表示不绑定，使用默认配置；Lighter 时为多腿账户 */
   @IsOptional()
+  @ValidateIf((_, v) => v !== null)
   @IsString()
-  apiConfigId?: string;
+  apiConfigId?: string | null;
+
+  /** Lighter 空腿子账户；Binance 可省略 */
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsString()
+  shortApiConfigId?: string | null;
 
   @IsOptional()
   @IsBoolean()

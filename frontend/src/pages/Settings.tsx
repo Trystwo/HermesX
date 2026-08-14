@@ -25,10 +25,11 @@ export function Settings() {
   const [addOpen, setAddOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string | number
+    name: string
     exchange: string
     environment: Environment
   } | null>(null)
-  const [testing, setTesting] = useState<Environment | null>(null)
+  const [testing, setTesting] = useState<string | number | null>(null)
 
   const testMutation = useMutation({
     mutationFn: configApi.testConnection,
@@ -57,9 +58,9 @@ export function Settings() {
     onError: (e) => toast.error((e as Error).message),
   })
 
-  const handleTest = (env: Environment) => {
-    setTesting(env)
-    testMutation.mutate(env)
+  const handleTest = (id: string | number) => {
+    setTesting(id)
+    testMutation.mutate(id)
   }
 
   return (
@@ -107,8 +108,11 @@ export function Settings() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-fg">
-                        {EXCHANGES.find((e) => e.value === c.exchange)?.label ?? c.exchange}
+                        {c.name}
                       </span>
+                      <Badge variant="default">
+                        {EXCHANGES.find((e) => e.value === c.exchange)?.label ?? c.exchange}
+                      </Badge>
                       <Badge variant={c.environment === 'LIVE' ? 'danger' : 'success'}>
                         {c.environment === 'LIVE' ? '实盘' : '模拟盘'}
                       </Badge>
@@ -126,9 +130,21 @@ export function Settings() {
                       )}
                     </div>
                     <div className="flex items-center gap-3 mt-1.5 text-xs text-fg-muted">
-                      <span className="font-mono">{c.apiKeyMasked}</span>
-                      <span className="text-fg-subtle">|</span>
-                      <span className="font-mono">{c.apiSecretMasked}</span>
+                      {c.exchange === 'LIGHTER' ? (
+                        <>
+                          <span>acct#{c.accountIndex ?? '?'}</span>
+                          <span className="text-fg-subtle">|</span>
+                          <span>key#{c.apiKeyIndex ?? '?'}</span>
+                          <span className="text-fg-subtle">|</span>
+                          <span className="font-mono">{c.apiSecretMasked}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="font-mono">{c.apiKeyMasked}</span>
+                          <span className="text-fg-subtle">|</span>
+                          <span className="font-mono">{c.apiSecretMasked}</span>
+                        </>
+                      )}
                     </div>
                     {c.lastTestedAt && (
                       <div className="text-[10px] text-fg-subtle mt-1">
@@ -140,8 +156,8 @@ export function Settings() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      loading={testing === c.environment}
-                      onClick={() => handleTest(c.environment)}
+                      loading={testing === c.id}
+                      onClick={() => handleTest(c.id)}
                     >
                       <Plug size={14} />
                       测试
@@ -153,6 +169,7 @@ export function Settings() {
                       onClick={() =>
                         setDeleteTarget({
                           id: c.id,
+                          name: c.name,
                           exchange: c.exchange,
                           environment: c.environment,
                         })
@@ -188,7 +205,8 @@ export function Settings() {
         confirmText="确认删除"
         content={
           <p>
-            确定要删除 <span className="text-fg font-medium">{deleteTarget?.exchange}</span>（
+            确定要删除 <span className="text-fg font-medium">{deleteTarget?.name}</span>
+            （{deleteTarget?.exchange} ·{' '}
             {deleteTarget?.environment === 'LIVE' ? '实盘' : '模拟盘'}）的 API 配置吗？
             绑定该配置的策略将无法继续交易。
           </p>
@@ -207,17 +225,38 @@ function AddApiConfigModal({
 }) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<CreateApiConfigInput>({
+    name: '',
     exchange: 'BINANCE',
     environment: 'TESTNET',
     apiKey: '',
     apiSecret: '',
+    accountIndex: undefined,
+    apiKeyIndex: 2,
   })
   const [submitting, setSubmitting] = useState(false)
   const [liveChecked, setLiveChecked] = useState(false)
+  const isLighter = form.exchange === 'LIGHTER'
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!form.apiKey.trim() || !form.apiSecret.trim()) {
+    if (!form.name.trim()) {
+      toast.error('请填写配置名称')
+      return
+    }
+    if (isLighter) {
+      if (form.accountIndex == null || Number.isNaN(Number(form.accountIndex))) {
+        toast.error('请填写 Lighter Account Index')
+        return
+      }
+      if (form.apiKeyIndex == null || Number.isNaN(Number(form.apiKeyIndex))) {
+        toast.error('请填写 API Key Index')
+        return
+      }
+      if (!form.apiSecret.trim()) {
+        toast.error('请填写 API Private Key')
+        return
+      }
+    } else if (!form.apiKey.trim() || !form.apiSecret.trim()) {
       toast.error('请填写完整的 API Key 和 Secret')
       return
     }
@@ -227,10 +266,32 @@ function AddApiConfigModal({
     }
     setSubmitting(true)
     try {
-      await configApi.createApiConfig(form)
+      const payload: CreateApiConfigInput = {
+        ...form,
+        name: form.name.trim(),
+        apiKey: isLighter
+          ? form.apiKey.trim() || `lighter:${form.accountIndex}:${form.apiKeyIndex}`
+          : form.apiKey.trim(),
+        apiSecret: form.apiSecret.trim(),
+        ...(isLighter
+          ? {
+              accountIndex: Number(form.accountIndex),
+              apiKeyIndex: Number(form.apiKeyIndex),
+            }
+          : {}),
+      }
+      await configApi.createApiConfig(payload)
       queryClient.invalidateQueries({ queryKey: ['apiConfigs'] })
       toast.success('API 配置已添加')
-      setForm({ exchange: 'BINANCE', environment: 'TESTNET', apiKey: '', apiSecret: '' })
+      setForm({
+        name: '',
+        exchange: 'BINANCE',
+        environment: 'TESTNET',
+        apiKey: '',
+        apiSecret: '',
+        accountIndex: undefined,
+        apiKeyIndex: 2,
+      })
       setLiveChecked(false)
       onClose()
     } catch (err) {
@@ -258,10 +319,26 @@ function AddApiConfigModal({
       }
     >
       <form id="api-config-form" onSubmit={handleSubmit} className="space-y-4">
+        <Input
+          label="名称"
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="例如：主账户、子账户A"
+        />
+
         <Select
           label="交易所"
           value={form.exchange}
-          onChange={(e) => setForm({ ...form, exchange: e.target.value })}
+          onChange={(e) =>
+            setForm({
+              ...form,
+              exchange: e.target.value,
+              apiKey: '',
+              apiSecret: '',
+              accountIndex: e.target.value === 'LIGHTER' ? 0 : undefined,
+              apiKeyIndex: e.target.value === 'LIGHTER' ? 2 : undefined,
+            })
+          }
           options={EXCHANGES}
         />
 
@@ -275,20 +352,65 @@ function AddApiConfigModal({
           ]}
         />
 
-        <Input
-          label="API Key"
-          value={form.apiKey}
-          onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-          placeholder="输入你的 API Key"
-        />
-
-        <Input
-          label="API Secret"
-          type="password"
-          value={form.apiSecret}
-          onChange={(e) => setForm({ ...form, apiSecret: e.target.value })}
-          placeholder="输入你的 API Secret"
-        />
+        {isLighter ? (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label="Account Index"
+                value={form.accountIndex ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value.trim()
+                  setForm({
+                    ...form,
+                    accountIndex: v === '' ? undefined : Number(v),
+                  })
+                }}
+                placeholder="例如 281474976504068"
+              />
+              <Input
+                label="API Key Index"
+                type="number"
+                min="0"
+                max="254"
+                value={form.apiKeyIndex ?? 2}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    apiKeyIndex: Number(e.target.value),
+                  })
+                }
+                placeholder="建议 2–254"
+              />
+            </div>
+            <Input
+              label="API Private Key"
+              type="password"
+              value={form.apiSecret}
+              onChange={(e) => setForm({ ...form, apiSecret: e.target.value })}
+              placeholder="Lighter API 私钥"
+            />
+            <div className="text-xs text-warn bg-warn/10 border border-warn/30 rounded p-3">
+              Lighter 无双向持仓。对冲策略需添加两个不同 Account Index
+              的子账户配置，并在策略中分别绑定多腿/空腿。
+            </div>
+          </>
+        ) : (
+          <>
+            <Input
+              label="API Key"
+              value={form.apiKey}
+              onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
+              placeholder="输入你的 API Key"
+            />
+            <Input
+              label="API Secret"
+              type="password"
+              value={form.apiSecret}
+              onChange={(e) => setForm({ ...form, apiSecret: e.target.value })}
+              placeholder="输入你的 API Secret"
+            />
+          </>
+        )}
 
         {form.environment === 'LIVE' && (
           <div className="space-y-2">

@@ -23,16 +23,22 @@ model User {
 
 // ============ 交易所 API 配置 ============
 model ApiConfig {
-  id          String     @id @default(uuid())
-  exchange    String     @default("BINANCE")
-  environment String     @default("TESTNET")
-  apiKey      String
-  apiSecret   String
-  isActive    Boolean    @default(true)
-  createdAt   DateTime   @default(now())
-  strategies  Strategy[]
+  id           String  @id @default(uuid())
+  name         String
+  exchange     String  @default("BINANCE")
+  environment  String  @default("TESTNET")
+  apiKey       String
+  apiSecret    String
+  /// Lighter: 账户 index（子账户各自独立；可为超大整数）
+  accountIndex BigInt?
+  /// Lighter: API key index（建议 2–254）
+  apiKeyIndex  Int?
+  isActive     Boolean @default(true)
+  createdAt    DateTime @default(now())
 
-  @@unique([exchange, environment])
+  strategiesLong  Strategy[] @relation("StrategyLongApiConfig")
+  strategiesShort Strategy[] @relation("StrategyShortApiConfig")
+
   @@map("api_configs")
 }
 
@@ -51,13 +57,17 @@ model Strategy {
   marginMode     String     @default("ISOLATED")
   /// 本地价格触及 TP/SL 时是否主动市价平仓（交易所条件单始终挂）
   localAutoCloseEnabled Boolean @default(false)
+  /// 多腿 API（Binance 唯一配置；Lighter 做多子账户）
   apiConfigId    String?
+  /// 空腿 API（Lighter 做空子账户；Binance 为空时两腿共用 apiConfigId）
+  shortApiConfigId String?
   status         String     @default("IDLE")
   isActive       Boolean    @default(false)
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  apiConfig  ApiConfig?  @relation(fields: [apiConfigId], references: [id], onDelete: SetNull)
+  apiConfig       ApiConfig?  @relation("StrategyLongApiConfig", fields: [apiConfigId], references: [id], onDelete: SetNull)
+  shortApiConfig  ApiConfig?  @relation("StrategyShortApiConfig", fields: [shortApiConfigId], references: [id], onDelete: SetNull)
   positions  Position[]
 
   @@index([symbol, isActive])

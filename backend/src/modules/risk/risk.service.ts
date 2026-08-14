@@ -192,14 +192,46 @@ export class RiskService implements OnModuleInit {
       const leverage = strategy.leverage > 0 ? strategy.leverage : 1;
       const cycleNotional = sideNotional * HEDGE_LEGS;
       const requiredMargin = (cycleNotional / leverage) * MARGIN_BUFFER;
+      const legMargin = (sideNotional / leverage) * MARGIN_BUFFER;
 
-      const exchange = await this.exchangeService.getExchangeForStrategy(strategy.id);
-      const balance = await this.exchangeService.fetchBalance(exchange);
-      if (balance.free < requiredMargin) {
+      const longEx = await this.exchangeService.getAdapterForStrategy(
+        strategy.id,
+        'LONG',
+      );
+      const longBal = await this.exchangeService.fetchBalance(longEx, {
+        symbol: strategy.symbol,
+      });
+
+      // Lighter 双子账户：各账户只需覆盖单腿保证金
+      if (!longEx.supportsHedgeMode) {
+        const shortEx = await this.exchangeService.getAdapterForStrategy(
+          strategy.id,
+          'SHORT',
+        );
+        const shortBal = await this.exchangeService.fetchBalance(shortEx, {
+          symbol: strategy.symbol,
+        });
+        if (longBal.free < legMargin) {
+          return {
+            passed: false,
+            reason:
+              `Insufficient LONG-leg margin: free=${longBal.free} ${longBal.currency}, ` +
+              `required=${legMargin.toFixed(4)}`,
+          };
+        }
+        if (shortBal.free < legMargin) {
+          return {
+            passed: false,
+            reason:
+              `Insufficient SHORT-leg margin: free=${shortBal.free} ${shortBal.currency}, ` +
+              `required=${legMargin.toFixed(4)}`,
+          };
+        }
+      } else if (longBal.free < requiredMargin) {
         return {
           passed: false,
           reason:
-            `Insufficient margin: free=${balance.free} ${balance.currency}, ` +
+            `Insufficient margin: free=${longBal.free} ${longBal.currency}, ` +
             `required=${requiredMargin.toFixed(4)} (cycleNotional=${cycleNotional.toFixed(4)}, leverage=${leverage})`,
         };
       }

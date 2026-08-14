@@ -85,6 +85,16 @@ export class PositionService {
     return this.orderService.replenishTpSl(id);
   }
 
+  /** 检查交易所/本地孤儿条件单 */
+  checkOrphanOrders(strategyId?: string) {
+    return this.orderService.checkOrphanOrders(strategyId);
+  }
+
+  /** 清理孤儿条件单 */
+  cleanupOrphanOrders(strategyId?: string, algoIds?: string[]) {
+    return this.orderService.cleanupOrphanOrders(strategyId, algoIds);
+  }
+
   /**
    * 批量为缺失 TP/SL 的 OPEN 仓位补挂
    */
@@ -299,10 +309,14 @@ export class PositionService {
       where: { strategyId, status: PositionStatus.OPEN },
     });
 
-    const exchange = await this.exchangeService.getExchangeForStrategy(strategyId);
-    const exchangePositions = await this.exchangeService.fetchPositions(exchange, [
-      strategy.symbol,
-    ]);
+    const adapters = await this.exchangeService.getAdaptersForStrategy(strategyId);
+    const exchangePositions = (
+      await Promise.all(
+        adapters.map((ex) =>
+          this.exchangeService.fetchPositions(ex, [strategy.symbol]),
+        ),
+      )
+    ).flat();
 
     const normalized = strategy.symbol.replace(/[:/]/g, '').toUpperCase();
     const exchangeQtyBySide = new Map<string, number>([
@@ -315,7 +329,10 @@ export class PositionService {
       const symOk =
         pSym === normalized ||
         pSym.includes(normalized) ||
-        normalized.includes(pSym.replace('USDTUSDT', 'USDT'));
+        normalized.includes(pSym.replace('USDTUSDT', 'USDT')) ||
+        // Lighter 可能返回 BTC / ETH 而无 USDT 后缀
+        normalized.startsWith(pSym) ||
+        pSym === normalized.replace(/USDT$|USDC$/i, '');
       if (!symOk) continue;
       const side = (ep.side || '').toUpperCase();
       if (side !== 'LONG' && side !== 'SHORT') continue;

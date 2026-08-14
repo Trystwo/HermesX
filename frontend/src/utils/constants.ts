@@ -23,6 +23,7 @@ export const DEFAULT_SYMBOLS = [
 
 export const EXCHANGES = [
   { label: 'Binance 币安', value: 'BINANCE' },
+  { label: 'Lighter', value: 'LIGHTER' },
   { label: 'OKX 欧易', value: 'OKX' },
   { label: 'Bybit', value: 'BYBIT' },
   { label: 'Gate.io', value: 'GATE' },

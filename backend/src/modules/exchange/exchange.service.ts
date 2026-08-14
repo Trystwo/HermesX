@@ -1,93 +1,41 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import ccxt, { Exchange } from 'ccxt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CryptoService } from '../../common/crypto/crypto.service';
-import { Environment } from '../../common/constants/enums';
+import { Environment, ExchangeName } from '../../common/constants/enums';
+import type { ExchangeAdapter } from './adapters/exchange-adapter';
+import { BinanceAdapter, extractAvgPrice, resolveMarginCurrency, testBinanceConnection } from './adapters/binance.adapter';
+import { LighterAdapter, testLighterConnection } from './adapters/lighter.adapter';
+import type {
+  BalanceInfo,
+  KlineInfo,
+  OpenOrderInfo,
+  OrderResult,
+  PlaceOrderParams,
+  PositionInfo,
+  PositionSideParam,
+  TickerInfo,
+} from './exchange.types';
 
-export interface PlaceOrderParams {
-  symbol: string;
-  side: 'BUY' | 'SELL';
-  type: 'MARKET' | 'STOP_MARKET' | 'TAKE_PROFIT_MARKET' | 'LIMIT';
-  quantity: number;
-  price?: number;
-  stopPrice?: number;
-  reduceOnly?: boolean;
-  closePosition?: boolean;
-  positionSide?: 'LONG' | 'SHORT' | 'BOTH';
-}
+export type {
+  PlaceOrderParams,
+  OrderResult,
+  OpenOrderInfo,
+  PositionInfo,
+  BalanceInfo,
+  TickerInfo,
+  KlineInfo,
+} from './exchange.types';
 
-export interface OrderResult {
-  id: string;
-  status: string;
-  filledQty: number;
-  avgPrice?: number;
-  raw?: any;
-}
-
-export interface OpenOrderInfo {
-  id: string;
-  symbol: string;
-  type: string;
-  side: string;
-  status: string;
-  price?: number;
-  stopPrice?: number;
-  amount: number;
-  filled: number;
-  /** 挂单时间（交易所）ms */
-  timestamp: number;
-  datetime?: string;
-  positionSide?: string;
-  reduceOnly?: boolean;
-  raw?: any;
-}
-
-export interface PositionInfo {
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  contracts: number;
-  entryPrice: number;
-  unrealizedPnl: number;
-  leverage: number;
-  marginMode: string;
-  liquidationPrice?: number;
-  markPrice?: number;
-}
-
-export interface BalanceInfo {
-  total: number;
-  free: number;
-  used: number;
-  currency: string;
-}
-
-export interface TickerInfo {
-  symbol: string;
-  lastPrice: number;
-  bid: number;
-  ask: number;
-  timestamp: number;
-}
-
-export interface KlineInfo {
-  timestamp: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+export type { ExchangeAdapter } from './adapters/exchange-adapter';
 
 /**
- * 交易所服务 - ccxt 封装
- * 支持 TESTNET/LIVE 双环境隔离
- * 内部维护 exchange 实例缓存
+ * 交易所服务：按 ApiConfig 创建/缓存适配器，并按策略侧（LONG/SHORT）解析账户。
  */
 @Injectable()
 export class ExchangeService implements OnModuleDestroy {
   private readonly logger = new Logger(ExchangeService.name);
-  private readonly exchangeCache = new Map<string, Exchange>();
+  private readonly adapterCache = new Map<string, ExchangeAdapter>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -96,86 +44,98 @@ export class ExchangeService implements OnModuleDestroy {
   ) {}
 
   /**
-   * 根据 ApiConfig 创建交易所实例
-   * TESTNET 调用 setSandboxMode(true)
+   * 根据 ApiConfig 创建适配器
    */
+  async createAdapter(apiConfig: {
+    id: string;
+    exchange: string;
+    environment: string;
+    apiKey: string;
+    apiSecret: string;
+    accountIndex?: number | null | bigint;
+    apiKeyIndex?: number | null;
+  }): Promise<ExchangeAdapter> {
+    const cacheKey = `id:${apiConfig.id}`;
+    const cached = this.adapterCache.get(cacheKey);
+    if (cached) return cached;
+
+    const apiKey = this.cryptoService.decrypt(apiConfig.apiKey);
+    const apiSecret = this.cryptoService.decrypt(apiConfig.apiSecret);
+    const exchangeName = apiConfig.exchange.toUpperCase();
+
+    let adapter: ExchangeAdapter;
+
+    if (exchangeName === ExchangeName.BINANCE) {
+      const binance = new BinanceAdapter(
+        apiConfig.id,
+        apiConfig.environment,
+        apiKey,
+        apiSecret,
+      );
+      await binance.init();
+      adapter = binance;
+      this.logger.log(
+        `Created Binance adapter ${apiConfig.environment} id=${apiConfig.id}`,
+      );
+    } else if (exchangeName === ExchangeName.LIGHTER) {
+      if (apiConfig.accountIndex == null || apiConfig.apiKeyIndex == null) {
+        throw new Error(
+          'Lighter ApiConfig requires accountIndex and apiKeyIndex',
+        );
+      }
+      adapter = new LighterAdapter(
+        apiConfig.id,
+        apiConfig.environment,
+        apiSecret,
+        Number(apiConfig.accountIndex),
+        apiConfig.apiKeyIndex,
+      );
+      this.logger.log(
+        `Created Lighter adapter ${apiConfig.environment} account=${apiConfig.accountIndex} id=${apiConfig.id}`,
+      );
+    } else {
+      throw new Error(`Unsupported exchange: ${apiConfig.exchange}`);
+    }
+
+    this.adapterCache.set(cacheKey, adapter);
+    return adapter;
+  }
+
+  /** @deprecated 使用 createAdapter */
   async createExchange(apiConfig: {
     id: string;
     exchange: string;
     environment: string;
     apiKey: string;
     apiSecret: string;
-  }): Promise<Exchange> {
-    const cacheKey = `${apiConfig.exchange}:${apiConfig.environment}`;
-
-    const cached = this.exchangeCache.get(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    const apiKey = this.cryptoService.decrypt(apiConfig.apiKey);
-    const apiSecret = this.cryptoService.decrypt(apiConfig.apiSecret);
-
-    let exchange: Exchange;
-    const exchangeName = apiConfig.exchange.toLowerCase();
-
-    if (exchangeName === 'binance') {
-      exchange = new ccxt.binance({
-        apiKey,
-        secret: apiSecret,
-        enableRateLimit: true,
-        recvWindow: 10000,
-        options: {
-          defaultType: 'future', // 合约
-          fetchMarkets: ['linear'], // 只加载 U 本位合约，避免 loadMarkets 命中现货端点
-          fetchCurrencies: false, // 禁用货币信息查询（命中 spot /sapi 端点）
-          // 自动根据交易所时间校准本地时间偏移，缓解 -1021 ahead/behind 报错
-          adjustForTimeDifference: true,
-        },
-      });
-    } else {
-      throw new Error(`Unsupported exchange: ${apiConfig.exchange}`);
-    }
-
-    // 模拟盘/实盘隔离
-    if (apiConfig.environment === Environment.TESTNET) {
-      // Binance 已废弃 setSandboxMode for futures，手动替换域名
-      const originalUrls = JSON.stringify((exchange as any).urls);
-      const testnetUrls = originalUrls.replace(/fapi\.binance\.com/g, 'testnet.binancefuture.com');
-      (exchange as any).urls = JSON.parse(testnetUrls);
-      this.logger.log(`Created TESTNET exchange instance for ${apiConfig.exchange} (manual URL)`);
-    } else {
-      this.logger.log(`Created LIVE exchange instance for ${apiConfig.exchange}`);
-    }
-
-    // 私有接口（余额/下单）依赖签名时间戳，启动时主动同步一次服务器时间偏移。
-    try {
-      await exchange.loadTimeDifference();
-    } catch (e) {
-      this.logger.warn(
-        `Failed to sync exchange time difference for ${apiConfig.exchange}:${apiConfig.environment}: ${(e as Error).message}`,
-      );
-    }
-
-    this.exchangeCache.set(cacheKey, exchange);
-    return exchange;
+    accountIndex?: number | null | bigint;
+    apiKeyIndex?: number | null;
+  }): Promise<ExchangeAdapter> {
+    return this.createAdapter(apiConfig);
   }
 
   /**
-   * 从数据库读取策略绑定的 ApiConfig,创建/缓存交易所实例
+   * 按策略 + 持仓侧解析适配器。
+   * Binance / 无 shortApiConfig：两侧共用 apiConfigId。
+   * Lighter：LONG → apiConfigId，SHORT → shortApiConfigId。
    */
-  async getExchangeForStrategy(strategyId: string): Promise<Exchange> {
+  async getAdapterForStrategy(
+    strategyId: string,
+    side: PositionSideParam = 'LONG',
+  ): Promise<ExchangeAdapter> {
     const strategy = await this.prisma.strategy.findUnique({
       where: { id: strategyId },
-      include: { apiConfig: true },
+      include: { apiConfig: true, shortApiConfig: true },
     });
     if (!strategy) {
       throw new Error(`Strategy not found: ${strategyId}`);
     }
 
-    let apiConfig = strategy.apiConfig;
+    let apiConfig =
+      side === 'SHORT' && strategy.shortApiConfig
+        ? strategy.shortApiConfig
+        : strategy.apiConfig;
 
-    // 未绑定配置时：优先 DEFAULT_ENVIRONMENT，避免误用实盘密钥
     if (!apiConfig) {
       const defaultEnv =
         this.configService.get<string>('defaultEnvironment') ||
@@ -191,108 +151,168 @@ export class ExchangeService implements OnModuleDestroy {
     }
 
     if (!apiConfig) {
-      throw new Error('No ApiConfig available. Please configure exchange API first.');
+      throw new Error(
+        'No ApiConfig available. Please configure exchange API first.',
+      );
     }
 
-    return this.createExchange({
+    if (
+      side === 'SHORT' &&
+      apiConfig.exchange === ExchangeName.LIGHTER &&
+      !strategy.shortApiConfig
+    ) {
+      throw new Error(
+        'Lighter strategy requires shortApiConfigId for SHORT leg',
+      );
+    }
+
+    return this.createAdapter({
       id: apiConfig.id,
       exchange: apiConfig.exchange,
       environment: apiConfig.environment,
       apiKey: apiConfig.apiKey,
       apiSecret: apiConfig.apiSecret,
+      accountIndex: apiConfig.accountIndex,
+      apiKeyIndex: apiConfig.apiKeyIndex,
     });
   }
 
+  /** 兼容旧调用：默认多腿账户 */
+  async getExchangeForStrategy(strategyId: string): Promise<ExchangeAdapter> {
+    return this.getAdapterForStrategy(strategyId, 'LONG');
+  }
+
   /**
-   * 根据环境获取默认交易所实例
+   * 返回策略绑定的全部适配器（去重）。用于 TP/SL 监控、孤儿单扫描。
    */
-  async getExchangeForEnvironment(environment: string): Promise<Exchange> {
+  async getAdaptersForStrategy(strategyId: string): Promise<ExchangeAdapter[]> {
+    const long = await this.getAdapterForStrategy(strategyId, 'LONG');
+    const adapters = [long];
+    try {
+      const short = await this.getAdapterForStrategy(strategyId, 'SHORT');
+      if (short.apiConfigId !== long.apiConfigId) {
+        adapters.push(short);
+      }
+    } catch {
+      /* 无空腿 */
+    }
+    return adapters;
+  }
+
+  /** 按 ApiConfig.id 取适配器（孤儿单清理指定子账户） */
+  async getAdapterByApiConfigId(apiConfigId: string): Promise<ExchangeAdapter> {
+    const apiConfig = await this.prisma.apiConfig.findUnique({
+      where: { id: apiConfigId },
+    });
+    if (!apiConfig) {
+      throw new Error(`ApiConfig not found: ${apiConfigId}`);
+    }
+    return this.createAdapter({
+      id: apiConfig.id,
+      exchange: apiConfig.exchange,
+      environment: apiConfig.environment,
+      apiKey: apiConfig.apiKey,
+      apiSecret: apiConfig.apiSecret,
+      accountIndex: apiConfig.accountIndex,
+      apiKeyIndex: apiConfig.apiKeyIndex,
+    });
+  }
+
+  async getExchangeForEnvironment(environment: string): Promise<ExchangeAdapter> {
     const apiConfig = await this.prisma.apiConfig.findFirst({
       where: { environment, isActive: true },
     });
     if (!apiConfig) {
       throw new Error(`No active ApiConfig for environment: ${environment}`);
     }
-    return this.createExchange({
+    return this.createAdapter({
       id: apiConfig.id,
       exchange: apiConfig.exchange,
       environment: apiConfig.environment,
       apiKey: apiConfig.apiKey,
       apiSecret: apiConfig.apiSecret,
+      accountIndex: apiConfig.accountIndex,
+      apiKeyIndex: apiConfig.apiKeyIndex,
     });
   }
 
-  /**
-   * 清除指定环境的缓存(配置更新时调用)
-   */
-  clearCache(environment?: string): void {
-    if (environment) {
-      const keysToDelete: string[] = [];
-      for (const key of this.exchangeCache.keys()) {
-        if (key.endsWith(`:${environment}`)) {
-          keysToDelete.push(key);
-        }
-      }
-      keysToDelete.forEach((k) => this.exchangeCache.delete(k));
+  clearCache(apiConfigId?: string): void {
+    if (apiConfigId) {
+      const existing = this.adapterCache.get(`id:${apiConfigId}`);
+      existing?.destroy?.();
+      this.adapterCache.delete(`id:${apiConfigId}`);
+      this.logger.log(`Exchange cache cleared for apiConfig ${apiConfigId}`);
     } else {
-      this.exchangeCache.clear();
+      for (const a of this.adapterCache.values()) {
+        a.destroy?.();
+      }
+      this.adapterCache.clear();
+      this.logger.log('Exchange cache cleared');
     }
-    this.logger.log(`Exchange cache cleared${environment ? ` for ${environment}` : ''}`);
   }
 
-  // ============ 交易方法 ============
+  // ============ 委托到适配器（保持旧签名，第一参数为 adapter） ============
 
-  async placeOrder(exchange: Exchange, params: PlaceOrderParams): Promise<OrderResult> {
-    // ccxt createOrder 签名: (symbol, type, side, amount, price?, params?)
-    // 额外的 Binance futures 参数放在 params 对象中
-    const extraParams: any = {};
-    if (params.stopPrice !== undefined) extraParams.stopPrice = params.stopPrice;
-    if (params.reduceOnly !== undefined) extraParams.reduceOnly = params.reduceOnly;
-    if (params.closePosition !== undefined) extraParams.closePosition = params.closePosition;
-    if (params.positionSide !== undefined) extraParams.positionSide = params.positionSide;
+  async placeOrder(
+    exchange: ExchangeAdapter,
+    params: PlaceOrderParams,
+  ): Promise<OrderResult> {
+    return exchange.placeOrder(params);
+  }
 
-    const result = await exchange.createOrder(
-      params.symbol,
-      params.type.toLowerCase() as any,
-      params.side.toLowerCase() as any,
-      params.quantity,
-      params.price,
-      extraParams,
+  extractAvgPrice(result: any): number | undefined {
+    return extractAvgPrice(result);
+  }
+
+  async resolveFillPrice(
+    exchange: ExchangeAdapter,
+    orderResult: OrderResult,
+    symbol: string,
+  ): Promise<number> {
+    if (orderResult.avgPrice && orderResult.avgPrice > 0) {
+      return orderResult.avgPrice;
+    }
+    const fromRaw = this.extractAvgPrice(orderResult.raw);
+    if (fromRaw) return fromRaw;
+
+    if (orderResult.id) {
+      try {
+        const fetched = await this.fetchOrder(exchange, orderResult.id, symbol);
+        if (fetched.avgPrice && fetched.avgPrice > 0) return fetched.avgPrice;
+        const again = this.extractAvgPrice(fetched.raw);
+        if (again) return again;
+      } catch (e) {
+        this.logger.warn(
+          `resolveFillPrice fetchOrder(${orderResult.id}) failed: ${(e as Error).message}`,
+        );
+      }
+    }
+
+    const ticker = await this.fetchTicker(exchange, symbol);
+    if (!ticker.lastPrice || ticker.lastPrice <= 0) {
+      throw new Error(`Unable to resolve fill price for ${symbol}`);
+    }
+    this.logger.warn(
+      `resolveFillPrice fallback to live ticker last=${ticker.lastPrice} for ${symbol}`,
     );
-
-    return {
-      id: result.id ?? '',
-      status: result.status || 'OPEN',
-      filledQty: result.filled || 0,
-      avgPrice: result.average,
-      raw: result,
-    };
+    return ticker.lastPrice;
   }
 
-  /**
-   * 查询单个订单状态（用于同步 TP/SL 条件单是否已成交）
-   */
   async fetchOrder(
-    exchange: Exchange,
+    exchange: ExchangeAdapter,
     orderId: string,
     symbol: string,
   ): Promise<OrderResult> {
-    const result = await exchange.fetchOrder(orderId, symbol);
-    return {
-      id: result.id ?? orderId,
-      status: result.status || 'unknown',
-      filledQty: result.filled || 0,
-      avgPrice: result.average ?? result.price ?? undefined,
-      raw: result,
-    };
+    return exchange.fetchOrder(orderId, symbol);
   }
 
   private static readonly REST_TIMEOUT_MS = 15_000;
 
-  /**
-   * 为交易所 REST 调用加超时，避免 cancel/fetch 挂起拖死监控
-   */
-  async withTimeout<T>(promise: Promise<T>, label: string, ms = ExchangeService.REST_TIMEOUT_MS): Promise<T> {
+  async withTimeout<T>(
+    promise: Promise<T>,
+    label: string,
+    ms = ExchangeService.REST_TIMEOUT_MS,
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
@@ -309,310 +329,181 @@ export class ExchangeService implements OnModuleDestroy {
     }
   }
 
-  /**
-   * 查询当前未成交挂单。
-   * Binance U本位条件单已迁到 Algo API：普通 openOrders 不含 TP/SL，
-   * 需同时拉 fapi openAlgoOrders（含 createTime 挂单时间）。
-   * Algo 拉取失败必须抛错，禁止返回空列表（否则监控会误判全部已成交）。
-   */
   async fetchOpenOrders(
-    exchange: Exchange,
+    exchange: ExchangeAdapter,
     symbol?: string,
   ): Promise<OpenOrderInfo[]> {
-    const regular = await this.withTimeout(
-      symbol ? exchange.fetchOpenOrders(symbol) : exchange.fetchOpenOrders(),
-      `fetchOpenOrders(${symbol ?? 'ALL'})`,
-    );
-
-    const fromRegular: OpenOrderInfo[] = (regular || []).map((o: any) => ({
-      id: String(o.id ?? ''),
-      symbol: o.symbol ?? symbol ?? '',
-      type: String(o.type ?? o.info?.type ?? '').toLowerCase(),
-      side: String(o.side ?? '').toLowerCase(),
-      status: String(o.status ?? 'open').toLowerCase(),
-      price: o.price != null ? Number(o.price) : undefined,
-      stopPrice:
-        o.stopPrice != null
-          ? Number(o.stopPrice)
-          : o.info?.stopPrice != null
-            ? Number(o.info.stopPrice)
-            : undefined,
-      amount: Number(o.amount ?? 0),
-      filled: Number(o.filled ?? 0),
-      timestamp: Number(o.timestamp ?? o.info?.time ?? o.info?.updateTime ?? 0),
-      datetime:
-        o.datetime ??
-        (o.timestamp ? new Date(o.timestamp).toISOString() : undefined),
-      positionSide: o.info?.positionSide ?? o.positionSide,
-      reduceOnly: o.reduceOnly ?? o.info?.reduceOnly,
-      raw: o,
-    }));
-
-    const fromAlgo = await this.fetchOpenAlgoOrders(exchange, symbol);
-    const seen = new Set(fromRegular.map((o) => o.id));
-    const merged = [...fromRegular];
-    for (const o of fromAlgo) {
-      if (o.id && !seen.has(o.id)) {
-        merged.push(o);
-        seen.add(o.id);
-      }
-    }
-    return merged;
+    return exchange.fetchOpenOrders(symbol);
   }
 
-  /**
-   * Binance 条件单（STOP_MARKET / TAKE_PROFIT_MARKET）开放挂单
-   * GET /fapi/v1/openAlgoOrders — 返回 algoId + createTime
-   * 失败抛错，由调用方跳过本轮对账（不可当作「无挂单」）。
-   */
-  async fetchOpenAlgoOrders(
-    exchange: Exchange,
-    symbol?: string,
-  ): Promise<OpenOrderInfo[]> {
-    const params: Record<string, string> = {};
-    if (symbol) {
-      params.symbol = symbol.includes('/')
-        ? symbol.split(':')[0].replace('/', '')
-        : symbol.replace(/[:/]/g, '').replace(/USDTUSDT$/, 'USDT');
-    }
-    try {
-      const raw = await this.withTimeout(
-        (exchange as any).fapiPrivateGetOpenAlgoOrders(params),
-        `fetchOpenAlgoOrders(${params.symbol ?? 'ALL'})`,
-      );
-      const list: any[] = Array.isArray(raw)
-        ? raw
-        : ((raw as { orders?: any[] } | null)?.orders ?? []);
-      return list.map((o) => {
-        const createTime = Number(o.createTime ?? o.bookTime ?? o.updateTime ?? 0);
-        return {
-          id: String(o.algoId ?? o.orderId ?? ''),
-          symbol: o.symbol ?? symbol ?? '',
-          type: String(o.orderType ?? o.type ?? '').toLowerCase(),
-          side: String(o.side ?? '').toLowerCase(),
-          status: String(o.algoStatus ?? o.status ?? 'NEW').toLowerCase(),
-          price: o.price != null ? Number(o.price) : undefined,
-          stopPrice:
-            o.triggerPrice != null
-              ? Number(o.triggerPrice)
-              : o.stopPrice != null
-                ? Number(o.stopPrice)
-                : undefined,
-          amount: Number(o.quantity ?? o.totalQty ?? 0),
-          filled: Number(o.actualQty ?? o.executedQty ?? 0),
-          timestamp: createTime,
-          datetime: createTime ? new Date(createTime).toISOString() : undefined,
-          positionSide: o.positionSide,
-          reduceOnly: o.reduceOnly,
-          raw: o,
-        } satisfies OpenOrderInfo;
-      });
-    } catch (e) {
-      const msg = (e as Error).message;
-      this.logger.warn(`fetchOpenAlgoOrders failed: ${msg}`);
-      throw e;
-    }
-  }
-
-  /**
-   * 取消订单：普通单走 cancelOrder；条件单（algoId）走 deleteAlgoOrder
-   */
   async cancelOrder(
-    exchange: Exchange,
+    exchange: ExchangeAdapter,
     orderId: string,
     symbol: string,
   ): Promise<void> {
-    try {
-      await this.withTimeout(
-        exchange.cancelOrder(orderId, symbol),
-        `cancelOrder(${orderId})`,
-      );
-      return;
-    } catch (e) {
-      const msg = (e as Error).message || '';
-      const timedOut = msg.toLowerCase().includes('timed out');
-      if (timedOut) throw e;
-
-      if (
-        msg.includes('-2011') ||
-        msg.includes('-2013') ||
-        msg.toLowerCase().includes('unknown order') ||
-        msg.toLowerCase().includes('does not exist')
-      ) {
-        await this.withTimeout(
-          (exchange as any).fapiPrivateDeleteAlgoOrder({ algoId: orderId }),
-          `deleteAlgoOrder(${orderId})`,
-        );
-        return;
-      }
-      try {
-        await this.withTimeout(
-          (exchange as any).fapiPrivateDeleteAlgoOrder({ algoId: orderId }),
-          `deleteAlgoOrder(${orderId})`,
-        );
-        return;
-      } catch {
-        throw e;
-      }
-    }
+    return exchange.cancelOrder(orderId, symbol);
   }
 
   async closePosition(
-    exchange: Exchange,
+    exchange: ExchangeAdapter,
     symbol: string,
     side: 'LONG' | 'SHORT',
     quantity: number,
   ): Promise<OrderResult> {
-    // 平仓: 反向市价单 + positionSide（Hedge Mode）
-    // 注意: 双向持仓模式下传 positionSide 时不能再传 reduceOnly，
-    // 否则币安返回 -1106 Parameter 'reduceonly' sent when not required.
-    const closeSide = side === 'LONG' ? 'SELL' : 'BUY';
-    return this.placeOrder(exchange, {
-      symbol,
-      side: closeSide as 'BUY' | 'SELL',
-      type: 'MARKET',
-      quantity,
-      positionSide: side,
-    });
+    return exchange.closePosition(symbol, side, quantity);
   }
 
-  async setLeverage(exchange: Exchange, symbol: string, leverage: number): Promise<void> {
-    try {
-      await (exchange as any).setLeverage(leverage, symbol);
-      this.logger.log(`Set leverage ${leverage}x for ${symbol}`);
-    } catch (e) {
-      this.logger.warn(`setLeverage failed for ${symbol}: ${(e as Error).message}`);
-      // 某些情况下杠杆已设置会报错,忽略
-    }
+  async setLeverage(
+    exchange: ExchangeAdapter,
+    symbol: string,
+    leverage: number,
+  ): Promise<void> {
+    return exchange.setLeverage(symbol, leverage);
   }
 
   async setMarginMode(
-    exchange: Exchange,
+    exchange: ExchangeAdapter,
     symbol: string,
     marginMode: 'ISOLATED' | 'CROSSED',
   ): Promise<void> {
-    try {
-      const mode = marginMode.toLowerCase();
-      await (exchange as any).setMarginMode(mode, symbol);
-      this.logger.log(`Set margin mode ${marginMode} for ${symbol}`);
-    } catch (e) {
-      this.logger.warn(`setMarginMode failed for ${symbol}: ${(e as Error).message}`);
-    }
+    return exchange.setMarginMode(symbol, marginMode);
   }
 
-  async setPositionMode(exchange: Exchange, dualSide: boolean): Promise<void> {
-    try {
-      await (exchange as any).setPositionMode(dualSide);
-      this.logger.log(`Set position mode dualSide=${dualSide}`);
-    } catch (e) {
-      this.logger.warn(`setPositionMode failed: ${(e as Error).message}`);
-    }
+  async setPositionMode(
+    exchange: ExchangeAdapter,
+    dualSide: boolean,
+  ): Promise<void> {
+    return exchange.setPositionMode(dualSide);
   }
 
-  async fetchPositions(exchange: Exchange, symbols?: string[]): Promise<PositionInfo[]> {
-    const positions = await exchange.fetchPositions(symbols);
-    return positions
-      .filter((p: any) => p && p.contracts && p.contracts > 0)
-      .map((p: any) => ({
-        symbol: p.symbol,
-        side: (p.side || 'long').toUpperCase() as 'LONG' | 'SHORT',
-        contracts: p.contracts,
-        entryPrice: p.entryPrice,
-        unrealizedPnl: p.unrealizedPnl,
-        leverage: p.leverage,
-        marginMode: p.marginMode || 'isolated',
-        liquidationPrice: p.liquidationPrice,
-        markPrice: p.markPrice,
-      }));
+  async fetchPositions(
+    exchange: ExchangeAdapter,
+    symbols?: string[],
+  ): Promise<PositionInfo[]> {
+    return exchange.fetchPositions(symbols);
   }
 
-  async fetchBalance(exchange: Exchange): Promise<BalanceInfo> {
-    const balance = await exchange.fetchBalance();
-    const usdt = (balance as any).USDT || (balance as any).total || {};
-    return {
-      total: usdt.total || 0,
-      free: usdt.free || 0,
-      used: usdt.used || 0,
-      currency: 'USDT',
-    };
+  resolveMarginCurrency(symbol?: string): string {
+    return resolveMarginCurrency(symbol);
   }
 
-  async fetchTicker(exchange: Exchange, symbol: string): Promise<TickerInfo> {
-    const ticker = await exchange.fetchTicker(symbol);
-    return {
-      symbol: ticker.symbol ?? '',
-      lastPrice: ticker.last || 0,
-      bid: ticker.bid || 0,
-      ask: ticker.ask || 0,
-      timestamp: ticker.timestamp || Date.now(),
-    };
+  async fetchBalance(
+    exchange: ExchangeAdapter,
+    opts?: { symbol?: string; currency?: string },
+  ): Promise<BalanceInfo> {
+    return exchange.fetchBalance(opts);
+  }
+
+  async fetchTicker(
+    exchange: ExchangeAdapter,
+    symbol: string,
+  ): Promise<TickerInfo> {
+    return exchange.fetchTicker(symbol);
   }
 
   async fetchKlines(
-    exchange: Exchange,
+    exchange: ExchangeAdapter,
     symbol: string,
     interval: string,
     limit: number = 100,
   ): Promise<KlineInfo[]> {
-    const ohlcv = await exchange.fetchOHLCV(symbol, interval, undefined, limit);
-    return ohlcv.map((k: any) => ({
-      timestamp: k[0],
-      open: k[1],
-      high: k[2],
-      low: k[3],
-      close: k[4],
-      volume: k[5],
-    }));
-  }
-
-  /**
-   * 测试 API 连通性
-   */
-  async testConnection(apiKey: string, apiSecret: string, environment: string): Promise<boolean> {
-    const exchange = new ccxt.binance({
-      apiKey,
-      secret: apiSecret,
-      options: {
-        defaultType: 'future',
-        fetchMarkets: ['linear'],
-        fetchCurrencies: false,
-      },
-    });
-
-    if (environment === Environment.TESTNET) {
-      const originalUrls = JSON.stringify((exchange as any).urls);
-      (exchange as any).urls = JSON.parse(
-        originalUrls.replace(/fapi\.binance\.com/g, 'testnet.binancefuture.com'),
+    if (!exchange.fetchKlines) {
+      throw new Error(
+        `Exchange ${exchange.exchangeName} does not support fetchKlines`,
       );
     }
-
-    try {
-      await exchange.fetchBalance();
-      return true;
-    } catch (e) {
-      this.logger.error(`API connection test failed: ${(e as Error).message}`);
-      return false;
-    }
+    return exchange.fetchKlines(symbol, interval, limit);
   }
 
   /**
-   * 订阅 WebSocket - ccxt.pro 的 watchOrders / watchTicker
-   * 注意: 需要安装 ccxt.pro,此处提供接口占位
+   * 测试 API 连通性（支持 Binance / Lighter）
    */
+  async testConnection(
+    apiKey: string,
+    apiSecret: string,
+    environment: string,
+    opts?: {
+      exchange?: string;
+      accountIndex?: number;
+      apiKeyIndex?: number;
+    },
+  ): Promise<boolean> {
+    const exchange = (opts?.exchange || ExchangeName.BINANCE).toUpperCase();
+    if (exchange === ExchangeName.LIGHTER) {
+      if (opts?.accountIndex == null || opts?.apiKeyIndex == null) {
+        this.logger.error('Lighter test requires accountIndex and apiKeyIndex');
+        return false;
+      }
+      const res = await testLighterConnection({
+        privateKey: apiSecret,
+        accountIndex: opts.accountIndex,
+        apiKeyIndex: opts.apiKeyIndex,
+        environment,
+      });
+      if (!res.ok) {
+        this.logger.error(`Lighter connection test failed: ${res.message}`);
+      }
+      return res.ok;
+    }
+    return testBinanceConnection(apiKey, apiSecret, environment);
+  }
+
+  async testConnectionDetailed(opts: {
+    exchange: string;
+    environment: string;
+    apiKey: string;
+    apiSecret: string;
+    accountIndex?: number;
+    apiKeyIndex?: number;
+  }): Promise<{ success: boolean; message: string; latency?: number }> {
+    const exchange = opts.exchange.toUpperCase();
+    if (exchange === ExchangeName.LIGHTER) {
+      if (opts.accountIndex == null || opts.apiKeyIndex == null) {
+        return {
+          success: false,
+          message: 'Lighter 需要 accountIndex 与 apiKeyIndex',
+        };
+      }
+      const res = await testLighterConnection({
+        privateKey: opts.apiSecret,
+        accountIndex: opts.accountIndex,
+        apiKeyIndex: opts.apiKeyIndex,
+        environment: opts.environment,
+      });
+      return {
+        success: res.ok,
+        message: res.ok ? '连接成功' : res.message || '连接失败',
+        latency: res.latencyMs,
+      };
+    }
+    const start = Date.now();
+    const ok = await testBinanceConnection(
+      opts.apiKey,
+      opts.apiSecret,
+      opts.environment,
+    );
+    return {
+      success: ok,
+      message: ok ? '连接成功' : '连接失败,请检查 API Key/Secret 和网络',
+      latency: Date.now() - start,
+    };
+  }
+
   async subscribeWebSocket(
-    exchange: Exchange,
+    _exchange: ExchangeAdapter,
     channel: string,
     symbol: string,
-    callback: (data: any) => void,
+    _callback: (data: any) => void,
   ): Promise<void> {
-    // ccxt.pro 需要单独的 pro 实例
-    // 此处为接口预留,实际实现依赖 ccxt.pro
     this.logger.warn(
-      `subscribeWebSocket(${channel}, ${symbol}) - 需要 ccxt.pro 支持,请配置 market.service 的原生 WebSocket`,
+      `subscribeWebSocket(${channel}, ${symbol}) - not implemented for adapters`,
     );
   }
 
   onModuleDestroy(): void {
-    this.exchangeCache.clear();
+    for (const a of this.adapterCache.values()) {
+      a.destroy?.();
+    }
+    this.adapterCache.clear();
   }
 }

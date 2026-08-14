@@ -7,6 +7,7 @@ import {
   IsString,
   Max,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { CycleInterval, MarginMode, QuantityType } from '../../../common/constants/enums';
@@ -68,9 +69,17 @@ export class UpdateStrategyDto {
   @IsBoolean()
   localAutoCloseEnabled?: boolean;
 
+  /** null 表示解绑 API 配置；Lighter 时为多腿账户 */
   @IsOptional()
+  @ValidateIf((_, v) => v !== null)
   @IsString()
-  apiConfigId?: string;
+  apiConfigId?: string | null;
+
+  /** null 表示解绑空腿配置 */
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsString()
+  shortApiConfigId?: string | null;
 
   @IsOptional()
   @IsBoolean()

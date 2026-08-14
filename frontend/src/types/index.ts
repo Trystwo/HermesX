@@ -46,6 +46,8 @@ export interface Strategy {
   /** 本地价格触及 TP/SL 时是否主动市价平仓 */
   localAutoCloseEnabled: boolean
   apiConfigId: string | number | null
+  /** Lighter 空腿子账户；Binance 为 null */
+  shortApiConfigId: string | number | null
   status: StrategyStatus
   isActive?: boolean
   environment: Environment
@@ -66,6 +68,7 @@ export interface CreateStrategyInput {
   marginMode: 'CROSSED' | 'ISOLATED'
   localAutoCloseEnabled: boolean
   apiConfigId: string | number | null
+  shortApiConfigId?: string | number | null
 }
 
 export type UpdateStrategyInput = Partial<CreateStrategyInput>
@@ -217,20 +220,26 @@ export interface Balance {
 // ============ API 配置 ============
 export interface ApiConfig {
   id: string | number
+  name: string
   exchange: string
   environment: Environment
   apiKeyMasked: string
   apiSecretMasked: string
+  accountIndex?: number | null
+  apiKeyIndex?: number | null
   status: 'ACTIVE' | 'INVALID' | 'UNTESTED'
   createdAt: string
   lastTestedAt: string | null
 }
 
 export interface CreateApiConfigInput {
+  name: string
   exchange: string
   environment: Environment
   apiKey: string
   apiSecret: string
+  accountIndex?: number
+  apiKeyIndex?: number
 }
 
 export interface TestConnectionResult {

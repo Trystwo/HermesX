@@ -192,9 +192,9 @@ export class TpslMonitorService implements OnModuleInit {
     if (Date.now() < this.rateLimitedUntil) return 0;
 
     const symbol = positions[0].strategy.symbol;
-    let exchange;
+    let adapters;
     try {
-      exchange = await this.exchangeService.getExchangeForStrategy(strategyId);
+      adapters = await this.exchangeService.getAdaptersForStrategy(strategyId);
     } catch (e) {
       this.logger.warn(
         `Cannot get exchange for strategy ${strategyId}: ${(e as Error).message}`,
@@ -204,7 +204,26 @@ export class TpslMonitorService implements OnModuleInit {
 
     let openOrders: OpenOrderInfo[];
     try {
-      openOrders = await this.exchangeService.fetchOpenOrders(exchange, symbol);
+      const lists = await Promise.all(
+        adapters.map(async (exchange) => {
+          const orders = await this.exchangeService.fetchOpenOrders(
+            exchange,
+            symbol,
+          );
+          return orders.map((o) => ({
+            ...o,
+            apiConfigId: o.apiConfigId ?? exchange.apiConfigId,
+          }));
+        }),
+      );
+      const seen = new Set<string>();
+      openOrders = lists.flat().filter((o) => {
+        if (!o.id) return false;
+        const key = `${o.apiConfigId ?? 'unknown'}::${o.id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
     } catch (e) {
       this.handleRateLimitError(e as Error);
       this.logger.warn(
@@ -213,7 +232,11 @@ export class TpslMonitorService implements OnModuleInit {
       return 0;
     }
 
-    const openIds = new Set(openOrders.map((o) => o.id).filter(Boolean));
+    const openIds = new Set<string>();
+    for (const o of openOrders) {
+      if (o.id) openIds.add(o.id);
+      if (o.clientOrderId) openIds.add(o.clientOrderId);
+    }
 
     if (openOrders.length > 0) {
       this.logger.debug(
@@ -223,7 +246,7 @@ export class TpslMonitorService implements OnModuleInit {
 
     // 按 side 预取交易所合约量与 DB OPEN 总量，供「两侧都 gone」使用
     const { bySide: exchangeContractsBySide, ok: exchangePosOk } =
-      await this.fetchExchangeContractsBySide(exchange, symbol);
+      await this.fetchExchangeContractsBySideMulti(adapters, symbol);
     const dbOpenQtyBySide = this.sumDbOpenQtyBySide(positions);
     const excessBySide = new Map<string, number>();
     for (const side of ['LONG', 'SHORT']) {
@@ -239,9 +262,14 @@ export class TpslMonitorService implements OnModuleInit {
 
     const planned: Planned[] = [];
     const bothGoneCandidates: OpenPositionRow[] = [];
+    const claimedExIds = new Set<string>();
 
     for (const position of positions) {
-      const decision = this.classifyAgainstOpenOrders(position, openIds, openOrders);
+      const decision = await this.classifyAgainstOpenOrders(
+        position,
+        openOrders,
+        claimedExIds,
+      );
       if (!decision) continue;
       if (decision.kind === 'bothGone') {
         bothGoneCandidates.push(position);
@@ -300,10 +328,30 @@ export class TpslMonitorService implements OnModuleInit {
 
         if (synced % TpslMonitorService.REFRESH_EVERY_N === 0) {
           try {
-            openOrders = await this.exchangeService.fetchOpenOrders(exchange, symbol);
+            const lists = await Promise.all(
+              adapters.map(async (ex) => {
+                const orders = await this.exchangeService.fetchOpenOrders(
+                  ex,
+                  symbol,
+                );
+                return orders.map((o) => ({
+                  ...o,
+                  apiConfigId: o.apiConfigId ?? ex.apiConfigId,
+                }));
+              }),
+            );
+            const seen = new Set<string>();
+            openOrders = lists.flat().filter((o) => {
+              if (!o.id) return false;
+              const key = `${o.apiConfigId ?? 'unknown'}::${o.id}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
             openIds.clear();
             for (const o of openOrders) {
               if (o.id) openIds.add(o.id);
+              if (o.clientOrderId) openIds.add(o.clientOrderId);
             }
           } catch (e) {
             this.handleRateLimitError(e as Error);
@@ -324,14 +372,15 @@ export class TpslMonitorService implements OnModuleInit {
     return synced;
   }
 
-  private classifyAgainstOpenOrders(
+  private async classifyAgainstOpenOrders(
     position: OpenPositionRow,
-    openIds: Set<string>,
     openOrders: OpenOrderInfo[],
-  ):
+    claimedExIds: Set<string>,
+  ): Promise<
     | { kind: 'asymmetric'; position: OpenPositionRow; trigger: 'TP' | 'SL'; filled: Order }
     | { kind: 'bothGone'; position: OpenPositionRow }
-    | null {
+    | null
+  > {
     const pendingTp = this.latestPending(
       position.orders,
       OrderType.TAKE_PROFIT_MARKET,
@@ -345,13 +394,27 @@ export class TpslMonitorService implements OnModuleInit {
       return null;
     }
 
-    const tpAlive = !!(pendingTp?.exchangeOrderId && openIds.has(pendingTp.exchangeOrderId));
-    const slAlive = !!(pendingSl?.exchangeOrderId && openIds.has(pendingSl.exchangeOrderId));
-    const tpGone = !!(pendingTp?.exchangeOrderId && !tpAlive);
-    const slGone = !!(pendingSl?.exchangeOrderId && !slAlive);
+    const tpEx = pendingTp
+      ? await this.orderService.findAndHealOpenConditional(
+          pendingTp,
+          openOrders,
+          claimedExIds,
+        )
+      : null;
+    const slEx = pendingSl
+      ? await this.orderService.findAndHealOpenConditional(
+          pendingSl,
+          openOrders,
+          claimedExIds,
+        )
+      : null;
+
+    const tpAlive = !!tpEx;
+    const slAlive = !!slEx;
+    const tpGone = !!(pendingTp && !tpAlive);
+    const slGone = !!(pendingSl && !slAlive);
 
     if (tpGone && slAlive) {
-      const slEx = openOrders.find((o) => o.id === pendingSl!.exchangeOrderId);
       this.logger.log(
         `TP gone, SL still open for ${position.id}: slId=${pendingSl!.exchangeOrderId} slPlacedAt=${
           slEx?.datetime ?? (slEx?.timestamp ? new Date(slEx.timestamp).toISOString() : '?')
@@ -361,7 +424,6 @@ export class TpslMonitorService implements OnModuleInit {
     }
 
     if (slGone && tpAlive) {
-      const tpEx = openOrders.find((o) => o.id === pendingTp!.exchangeOrderId);
       this.logger.log(
         `SL gone, TP still open for ${position.id}: tpId=${pendingTp!.exchangeOrderId} tpPlacedAt=${
           tpEx?.datetime ?? (tpEx?.timestamp ? new Date(tpEx.timestamp).toISOString() : '?')
@@ -491,40 +553,55 @@ export class TpslMonitorService implements OnModuleInit {
     }
   }
 
-  private async fetchExchangeContractsBySide(
-    exchange: Awaited<ReturnType<ExchangeService['getExchangeForStrategy']>>,
+  private async fetchExchangeContractsBySideMulti(
+    adapters: Awaited<ReturnType<ExchangeService['getAdaptersForStrategy']>>,
     symbol: string,
   ): Promise<{ bySide: Map<string, number>; ok: boolean }> {
     const map = new Map<string, number>([
       ['LONG', 0],
       ['SHORT', 0],
     ]);
-    try {
-      const positions = await this.exchangeService.withTimeout(
-        this.exchangeService.fetchPositions(exchange, [symbol]),
-        `fetchPositions(${symbol})`,
-      );
-      const normalized = symbol.replace(/[:/]/g, '').toUpperCase();
-      for (const p of positions) {
-        const pSym = (p.symbol || '').replace(/[:/]/g, '').toUpperCase();
-        const symOk =
-          pSym === normalized ||
-          pSym.includes(normalized) ||
-          normalized.includes(pSym.replace('USDTUSDT', 'USDT'));
-        if (!symOk) continue;
-        const side = (p.side || '').toUpperCase();
-        if (side === 'LONG' || side === 'SHORT') {
-          map.set(side, (map.get(side) ?? 0) + (p.contracts || 0));
+    let anyOk = false;
+    const normalized = symbol.replace(/[:/]/g, '').toUpperCase();
+    const base = normalized.replace(/USDT$|USDC$/i, '');
+
+    for (const exchange of adapters) {
+      try {
+        const positions = await this.exchangeService.withTimeout(
+          this.exchangeService.fetchPositions(exchange, [symbol]),
+          `fetchPositions(${symbol})`,
+        );
+        anyOk = true;
+        for (const p of positions) {
+          const pSym = (p.symbol || '').replace(/[:/]/g, '').toUpperCase();
+          const symOk =
+            pSym === normalized ||
+            pSym.includes(normalized) ||
+            normalized.includes(pSym.replace('USDTUSDT', 'USDT')) ||
+            pSym === base ||
+            normalized.startsWith(pSym);
+          if (!symOk) continue;
+          const side = (p.side || '').toUpperCase();
+          if (side === 'LONG' || side === 'SHORT') {
+            map.set(side, (map.get(side) ?? 0) + (p.contracts || 0));
+          }
         }
+      } catch (e) {
+        this.handleRateLimitError(e as Error);
+        this.logger.warn(
+          `fetchPositions for excessQty failed: ${(e as Error).message}`,
+        );
       }
-      return { bySide: map, ok: true };
-    } catch (e) {
-      this.handleRateLimitError(e as Error);
-      this.logger.warn(
-        `fetchPositions for excessQty failed: ${(e as Error).message}`,
-      );
-      return { bySide: map, ok: false };
     }
+
+    return { bySide: map, ok: anyOk };
+  }
+
+  private async fetchExchangeContractsBySide(
+    exchange: Awaited<ReturnType<ExchangeService['getAdapterForStrategy']>>,
+    symbol: string,
+  ): Promise<{ bySide: Map<string, number>; ok: boolean }> {
+    return this.fetchExchangeContractsBySideMulti([exchange], symbol);
   }
 
   private sumDbOpenQtyBySide(positions: OpenPositionRow[]): Map<string, number> {
